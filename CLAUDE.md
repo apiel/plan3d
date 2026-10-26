@@ -9,4 +9,6 @@ Key decisions so far:
 - The user is not a professional (renovating their own house and flat in spare time), prefers simple solutions, and tests on the phone over `chrome://flags` insecure-origin flag or USB `adb reverse`.
 - The user explicitly does NOT want a manual workflow (tapping corners, drawing): the point of the app is automatic mapping from the phone camera, with manual measurements only to refine. Manual drawing exists in the editor as a secondary tool. Do not steer the capture back to tap-based.
 - The scan pipeline (`src/scan.ts`, `src/scan/extract.ts`) was written and tested against synthetic rooms only, in a session without access to the phone. Expect real-data problems; the first job is to try it on the Pixel.
+- Real scan data: the user can download raw keyframes from `scan.html` and replay them with `npm run replay -- file.json` (writes an SVG). Ask for such a file when debugging scan quality instead of guessing.
+- End goal includes furniture in the plan (detected boxes exist; editing them is basic).
 - Python is not needed for anything; use `npm run dev`.

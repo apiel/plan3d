@@ -28,8 +28,38 @@ function rayToPolygon(o: Vec, dx: number, dz: number, poly: Vec[]): number {
   return best;
 }
 
+/** Furniture as an axis-aligned box: min corner, size, height. */
+interface TestBox {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+}
+
+/** Distance along a 3D ray to a box standing on the floor (slab method), or Infinity. */
+function rayToBox(o: [number, number, number], dir: [number, number, number], b: TestBox): number {
+  const lo = [b.x, 0, b.z];
+  const hi = [b.x + b.w, b.h, b.z + b.d];
+  let tmin = 0;
+  let tmax = Infinity;
+  for (let k = 0; k < 3; k++) {
+    if (Math.abs(dir[k]) < 1e-12) {
+      if (o[k] < lo[k] || o[k] > hi[k]) return Infinity;
+      continue;
+    }
+    let t1 = (lo[k] - o[k]) / dir[k];
+    let t2 = (hi[k] - o[k]) / dir[k];
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return Infinity;
+  }
+  return tmin > 1e-6 ? tmin : Infinity;
+}
+
 /** What a phone turning on the spot at each position would see in a room. */
-function scan(poly: Vec[], ceiling: number, cams: Vec[], noise = 0.02, camY = 1.4): Keyframe[] {
+function scan(poly: Vec[], ceiling: number, cams: Vec[], noise = 0.02, camY = 1.4, boxes: TestBox[] = []): Keyframe[] {
   const rand = rng(7);
   return cams.map((c) => {
     const pts: number[] = [];
@@ -42,6 +72,7 @@ function scan(poly: Vec[], ceiling: number, cams: Vec[], noise = 0.02, camY = 1.
         let t = rayToPolygon(c, dx, dz, poly) / Math.cos(e);
         if (el < 0) t = Math.min(t, camY / -Math.sin(e));
         if (el > 0) t = Math.min(t, (ceiling - camY) / Math.sin(e));
+        for (const b of boxes) t = Math.min(t, rayToBox([c.x, camY, c.y], [Math.cos(e) * dx, Math.sin(e), Math.cos(e) * dz], b));
         if (!isFinite(t) || t > 6) continue;
         const n = () => (rand() - 0.5) * 2 * noise;
         pts.push(c.x + Math.cos(e) * dx * t + n(), camY + Math.sin(e) * t + n(), c.y + Math.cos(e) * dz * t + n());
@@ -150,6 +181,43 @@ describe('extractRoom', () => {
     const s = sides(room.corners);
     expect(s[0]).toBeGreaterThan(2.7);
     expect(s[3]).toBeLessThan(4.3);
+  });
+
+  it('keeps walls straight behind furniture and finds the furniture', () => {
+    const sofa = { x: 0, z: 2.1, w: 2.2, d: 0.9, h: 0.85 }; // against the back wall
+    const desk = { x: 3.2, z: 0.4, w: 0.8, d: 1.4, h: 0.75 }; // against the right wall
+    const table = { x: 1.4, z: 0.9, w: 1.2, d: 0.8, h: 0.75 }; // free standing
+    const frames = scan(
+      rect,
+      2.5,
+      [
+        { x: 0.8, y: 0.5 },
+        { x: 2.6, y: 0.4 },
+        { x: 0.6, y: 1.6 },
+        { x: 2.9, y: 1.9 },
+      ],
+      0.02,
+      1.4,
+      [sofa, desk, table]
+    );
+    const room = extractRoom(frames)!;
+    expect(room.corners).toHaveLength(4);
+    const s = sides(room.corners);
+    expect(s[0]).toBeCloseTo(3, 0);
+    expect(s[3]).toBeCloseTo(4, 0);
+    expect(Math.abs(polyArea(room.corners))).toBeGreaterThan(11);
+
+    // the free-standing table is found where it is, roughly its size
+    const found = room.furniture.find((b) => Math.abs(b.x + b.w / 2 - 2.0) < 0.3 && Math.abs(b.y + b.d / 2 - 1.3) < 0.3);
+    expect(found).toBeDefined();
+    expect(found!.w).toBeGreaterThan(0.9);
+    expect(found!.w).toBeLessThan(1.5);
+    expect(found!.h).toBeCloseTo(0.75, 1);
+
+    // the sofa is pulled back to the wall it stands against
+    const couch = room.furniture.find((b) => b.w > 1.7 && b.y > 1.8);
+    expect(couch).toBeDefined();
+    expect(couch!.y + couch!.d).toBeCloseTo(Math.max(...room.corners.map((c) => c.y)), 2);
   });
 
   it('gives up on too little data', () => {

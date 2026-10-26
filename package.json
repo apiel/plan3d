@@ -8,7 +8,8 @@
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "replay": "vite-node scripts/replay.ts"
   },
   "devDependencies": {
     "@types/webxr": "^0.5.24",

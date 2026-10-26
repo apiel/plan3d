@@ -28,7 +28,7 @@ Node 18 is enough (Vite 5, same as plinth3d).
 ### Pages
 
 - `scan.html` is the phone scan page (the main capture path). Start it, turn slowly aiming at walls, floor and ceiling, walk around the room, then Finish. The outline is added to the plan and the editor opens. A top-down mini map shows what has been seen so far.
-- `index.html` is the plan editor (desktop-friendly): draw a room, click a wall to set its measured length, click a corner to make it a right angle, drag corners, pan and zoom. Plans are kept in `localStorage` and can be exported and imported as JSON.
+- `index.html` is the plan editor (desktop-friendly). Furniture from scans shows as boxes you can drag or delete. You can also draw a room, click a wall to set its measured length, click a corner to make it a right angle, drag corners, pan and zoom. Plans are kept in `localStorage` and can be exported and imported as JSON.
 - `depth.html` is the phone test page for WebXR depth sensing. See below.
 
 ## How the scan works
@@ -36,12 +36,23 @@ Node 18 is enough (Vite 5, same as plinth3d).
 `src/scan.ts` collects keyframes while you move (every 15 cm or 12° of turning): the camera position and about 700 depth points in world coordinates. `src/scan/extract.ts` then:
 
 1. Finds floor and ceiling from the spread of point heights (ARCore's world is gravity aligned, y up).
-2. Keeps points at wall height and projects them to the floor plane.
-3. Carves free space along every camera-to-point ray (a cell needs 3 rays to count as free, so stray readings cannot open holes) and marks the points as walls.
+2. Takes walls from a band just under the ceiling (1.5 m above the floor up to the ceiling), above most furniture, so a sofa or desk against a wall does not move the wall. Falls back to a wide band if too little was seen up there.
+3. Carves free space along every camera-to-point ray, stopping at walls (so a stray reading behind a wall cannot open it); floor and ceiling points are free space themselves. A cell needs 3 rays to count as free.
 4. Cleans the free region (closing, hole filling, largest component), traces its outline and simplifies it.
 5. Finds the dominant wall direction, rotates the capture to match, and snaps walls to it so rooms come out with clean right angles.
+6. Groups the points between the floor and the wall band, inside the room, into furniture boxes (size and height), extended to the wall when they stand against one.
 
-The extraction is covered by tests on synthetic rooms (rectangle, rotated rectangle, L shape, noisy readings with stray points). It has **not yet been tried on a real phone**.
+The extraction is covered by tests on synthetic rooms (rectangle, rotated rectangle, L shape, noisy readings with stray points, a furnished room). On a real phone (first try, furnished room, before the upper-band change) the result was "not bad but messy".
+
+### Debugging a real scan
+
+After a scan, `scan.html` offers **Download scan data** (raw keyframes as JSON). On the computer:
+
+```
+npm run replay -- scan-....json
+```
+
+prints floor/ceiling, wall lengths and furniture, and writes `scan-....svg`: raw top-down points on the left (green: wall band, grey: lower, red: camera positions), the extracted room and furniture on the right. Use it to tune the constants at the top of `src/scan/extract.ts`, and add good files as test fixtures.
 
 ## Depth test on a phone
 
@@ -66,6 +77,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/scan.ts` | AR scan page: collects depth keyframes, mini map, adds the room to the plan. |
 | `src/scan/extract.ts` | Keyframes to room outline (see above). |
 | `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
+| `scripts/replay.ts` | Replays a downloaded scan through the extraction and writes an SVG. |
 | `src/storage.ts` | Plan persistence in `localStorage`. |
 | `src/xr.ts` | WebXR matrix helpers shared by the scan code. |
 | `src/depth-test.js` | WebXR depth test page logic (plain JS, predates the scan). |

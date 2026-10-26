@@ -4,8 +4,8 @@
 // Keyframes are collected while the phone moves; on Finish the outline is
 // extracted (src/scan/extract.ts) and added to the plan the editor opens.
 
-import { Plan, dist, roomFromCorners, toggleRightAngle } from './model';
-import { Keyframe, extractRoom } from './scan/extract';
+import { Plan, dist, newId, roomFromCorners, toggleRightAngle } from './model';
+import { Keyframe, RoomScan, extractRoom } from './scan/extract';
 import { load, save } from './storage';
 import { Vec3, forward, unproject } from './xr';
 
@@ -22,6 +22,7 @@ const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) 
 const supportEl = $('support');
 const startBtn = $<HTMLButtonElement>('start');
 const overlay = $('overlay');
+const after = $('after');
 const hud = $('hud');
 const mapCanvas = $<HTMLCanvasElement>('map');
 const mapCtx = mapCanvas.getContext('2d')!;
@@ -60,6 +61,7 @@ async function checkSupport(): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  after.hidden = true;
   frames.length = 0;
   last = null;
   origin = null;
@@ -78,7 +80,10 @@ async function start(): Promise<void> {
   await session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl!) });
   refSpace = await session.requestReferenceSpace('local');
   overlay.classList.add('on');
-  session.addEventListener('end', () => overlay.classList.remove('on'));
+  session.addEventListener('end', () => {
+    overlay.classList.remove('on');
+    showAfter();
+  });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -193,9 +198,11 @@ function updateHud(s: XRSession, depth: XRCPUDepthInformation | null): void {
 
 // ---------- finishing ----------
 
-function addRoomToPlan(corners: { x: number; y: number }[]): void {
+let added: RoomScan | null = null;
+
+function addRoomToPlan(scan: RoomScan): void {
   const plan: Plan = load();
-  const room = roomFromCorners(corners);
+  const room = roomFromCorners(scan.corners);
   // put the new room to the right of what is already there
   const shift = plan.points.length ? Math.max(...plan.points.map((p) => p.x)) + 1 - Math.min(...room.points.map((p) => p.x)) : 0;
   for (const p of room.points) {
@@ -205,6 +212,7 @@ function addRoomToPlan(corners: { x: number; y: number }[]): void {
   plan.points.push(...room.points);
   plan.walls.push(...room.walls);
   plan.constraints.push(...room.constraints);
+  plan.furniture.push(...scan.furniture.map((f) => ({ id: newId(), ...f, x: f.x + shift })));
 
   // corners that came out near 90 degrees become right-angle constraints
   for (const p of room.points) {
@@ -224,11 +232,33 @@ async function finish(): Promise<void> {
     flash('Could not find a room outline yet. Cover more of the walls, floor and ceiling, then try again.');
     return;
   }
-  addRoomToPlan(room.corners);
+  addRoomToPlan(room);
+  added = room;
   await session?.end();
-  window.location.href = './index.html';
 }
 
+/** After a session: offer the editor, another scan, and the raw data for debugging. */
+function showAfter(): void {
+  if (!frames.length) return;
+  after.hidden = false;
+  $('afterText').textContent = added
+    ? `Room added to the plan: ${added.corners.length} walls, ${added.furniture.length} pieces of furniture. Scan data: ${frames.length} views.`
+    : `Scan stopped, nothing added. Scan data: ${frames.length} views.`;
+  added = null;
+}
+
+function downloadScan(): void {
+  const round = (v: number) => Math.round(v * 1000) / 1000;
+  const data = { version: 1, date: new Date().toISOString(), frames: frames.map((f) => ({ cam: f.cam.map(round), points: Array.from(f.points, round) })) };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `scan-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+$('download').addEventListener('click', downloadScan);
 $('finish').addEventListener('click', () => void finish());
 $('cancel').addEventListener('click', () => void session?.end());
 overlay.addEventListener('beforexrselect', (e) => e.preventDefault());

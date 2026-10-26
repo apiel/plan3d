@@ -23,13 +23,24 @@ export type Constraint =
   /** The angle at corner `b` between `a` and `c` is 90 degrees. */
   | { type: 'rightAngle'; a: string; b: string; c: string };
 
+/** A box standing on the floor: min corner and size in metres, height above the floor. */
+export interface Furniture {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  h: number;
+}
+
 export interface Plan {
   points: PlanPoint[];
   walls: Wall[];
   constraints: Constraint[];
+  furniture: Furniture[];
 }
 
-export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [] });
+export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [] });
 
 export const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -109,7 +120,12 @@ export function parse(text: string): Plan {
   if (!Array.isArray(raw.points) || !Array.isArray(raw.walls) || !Array.isArray(raw.constraints)) {
     throw new Error('Not a plan file');
   }
-  return { points: raw.points, walls: raw.walls, constraints: raw.constraints };
+  return {
+    points: raw.points,
+    walls: raw.walls,
+    constraints: raw.constraints,
+    furniture: Array.isArray(raw.furniture) ? raw.furniture : [],
+  };
 }
 
 /** A closed room from an ordered list of corners (metres). */

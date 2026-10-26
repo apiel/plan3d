@@ -23,8 +23,16 @@ import { load, save } from './storage';
 const POINT_HIT = 12; // px
 const WALL_HIT = 8; // px
 
-type Selection = { kind: 'point'; id: string } | { kind: 'wall'; a: string; b: string } | null;
-type Drag = { kind: 'point'; id: string; moved: boolean } | { kind: 'pan'; x: number; y: number } | null;
+type Selection =
+  | { kind: 'point'; id: string }
+  | { kind: 'wall'; a: string; b: string }
+  | { kind: 'furniture'; id: string }
+  | null;
+type Drag =
+  | { kind: 'point'; id: string; moved: boolean }
+  | { kind: 'furniture'; id: string; x: number; y: number; moved: boolean }
+  | { kind: 'pan'; x: number; y: number }
+  | null;
 
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const canvas = el<HTMLCanvasElement>('canvas');
@@ -114,6 +122,16 @@ function hitWall(sx: number, sy: number): { a: string; b: string } | undefined {
   return best;
 }
 
+function hitFurniture(sx: number, sy: number): string | undefined {
+  const w = toWorld(sx, sy);
+  // last drawn is on top
+  for (let i = plan.furniture.length - 1; i >= 0; i--) {
+    const f = plan.furniture[i];
+    if (w.x >= f.x && w.x <= f.x + f.w && w.y >= f.y && w.y <= f.y + f.d) return f.id;
+  }
+  return undefined;
+}
+
 // ---------- rendering ----------
 
 function resizeCanvas(): void {
@@ -160,6 +178,20 @@ function render(): void {
   const h = canvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
   drawGrid();
+
+  // furniture, under the walls
+  for (const f of plan.furniture) {
+    const s = toScreen(f);
+    const selected = selection?.kind === 'furniture' && selection.id === f.id;
+    ctx.fillStyle = selected ? '#1e3a5f' : '#262b34';
+    ctx.strokeStyle = selected ? '#60a5fa' : '#4b5563';
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.fillRect(s.x, s.y, f.w * view.scale, f.d * view.scale);
+    ctx.strokeRect(s.x, s.y, f.w * view.scale, f.d * view.scale);
+    if (f.w * view.scale > 50 && f.d * view.scale > 22) {
+      label(`${(f.w * 100).toFixed(0)}×${(f.d * 100).toFixed(0)}`, { x: s.x + (f.w * view.scale) / 2, y: s.y + (f.d * view.scale) / 2 }, '#8d95a1', false);
+    }
+  }
 
   // walls
   for (const wall of plan.walls) {
@@ -273,6 +305,21 @@ function renderPanel(): void {
         resolve();
       };
     }
+  } else if (selection?.kind === 'furniture') {
+    const id = selection.id;
+    const f = plan.furniture.find((x) => x.id === id);
+    if (f) {
+      sel.innerHTML = `
+        <h2>Furniture</h2>
+        <p>${(f.w * 100).toFixed(0)} × ${(f.d * 100).toFixed(0)} cm, ${(f.h * 100).toFixed(0)} cm high</p>
+        <div class="row"><button id="delF" class="danger">Delete</button></div>
+        <p class="muted">Drag to move it.</p>`;
+      el('delF').onclick = () => {
+        plan.furniture = plan.furniture.filter((x) => x.id !== id);
+        selection = null;
+        resolve();
+      };
+    }
   } else if (selection?.kind === 'point') {
     const id = selection.id;
     const canSquare = cornerNeighbours(plan, id) !== undefined;
@@ -300,7 +347,7 @@ function renderPanel(): void {
   const conflicts = lastSolve?.conflicts ?? [];
   status.innerHTML = `
     <h2>Plan</h2>
-    <div>${plan.points.length} corners · ${plan.walls.length} walls</div>
+    <div>${plan.points.length} corners · ${plan.walls.length} walls · ${plan.furniture.length} furniture</div>
     <div>${measuredWalls} measured · ${squared} squared corners</div>
     ${
       conflicts.length
@@ -337,6 +384,7 @@ function finishDrawing(close: boolean): void {
 
 canvas.addEventListener('pointerdown', (e) => {
   const pos = eventPos(e);
+  cursor = toWorld(pos.x, pos.y);
   canvas.setPointerCapture(e.pointerId);
 
   if (drawing) {
@@ -357,8 +405,12 @@ canvas.addEventListener('pointerdown', (e) => {
     drag = { kind: 'point', id: pid, moved: false };
   } else {
     const w = hitWall(pos.x, pos.y);
+    const fid = w ? undefined : hitFurniture(pos.x, pos.y);
     if (w) {
       selection = { kind: 'wall', a: w.a, b: w.b };
+    } else if (fid) {
+      selection = { kind: 'furniture', id: fid };
+      drag = { kind: 'furniture', id: fid, x: cursor.x, y: cursor.y, moved: false };
     } else {
       selection = null;
       drag = { kind: 'pan', x: pos.x, y: pos.y };
@@ -380,6 +432,16 @@ canvas.addEventListener('pointermove', (e) => {
       drag.moved = true;
     }
     render();
+  } else if (drag?.kind === 'furniture') {
+    const f = plan.furniture.find((x) => x.id === (drag as { id: string }).id);
+    if (f) {
+      f.x += cursor.x - drag.x;
+      f.y += cursor.y - drag.y;
+      drag.x = cursor.x;
+      drag.y = cursor.y;
+      drag.moved = true;
+    }
+    render();
   } else if (drag?.kind === 'pan') {
     view.ox += pos.x - drag.x;
     view.oy += pos.y - drag.y;
@@ -393,8 +455,10 @@ canvas.addEventListener('pointermove', (e) => {
 
 canvas.addEventListener('pointerup', () => {
   const moved = drag?.kind === 'point' && drag.moved;
+  const movedFurniture = drag?.kind === 'furniture' && drag.moved;
   drag = null;
   if (moved) resolve();
+  else if (movedFurniture) save(plan);
 });
 
 canvas.addEventListener(
@@ -416,6 +480,12 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && drawing) finishDrawing(false);
   if ((e.key === 'Delete' || e.key === 'Backspace') && selection?.kind === 'point') {
     removePoint(plan, selection.id);
+    selection = null;
+    resolve();
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selection?.kind === 'furniture') {
+    const id = selection.id;
+    plan.furniture = plan.furniture.filter((x) => x.id !== id);
     selection = null;
     resolve();
   }

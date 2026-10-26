@@ -1,12 +1,12 @@
 # TODO
 
-Status: the whole chain exists. `scan.html` collects depth on the phone, `src/scan/extract.ts` turns it into an outline (tested on synthetic rooms only), the editor opens it, and the solver tightens it with measurements. The depth test page works on a Pixel 9a. **Nothing of the scan has run on a real phone yet**, and the editor UI has only been typechecked, built and loaded empty, not clicked through.
+Status: the whole chain exists, including furniture boxes and raw scan download/replay. `scan.html` collects depth on the phone, `src/scan/extract.ts` turns it into an outline (tested on synthetic rooms only), the editor opens it, and the solver tightens it with measurements. The depth test page works on a Pixel 9a. **Nothing of the scan has run on a real phone yet**, and the editor UI has only been typechecked, built and loaded empty, not clicked through.
 
 ## Next
 
-- [ ] **Try `scan.html` on the Pixel in a real room** and fix what breaks. Things to check: does the mini map fill with green wall points; is the world really y-up (the extraction relies on it); is the depth view orientation right (grid is 24 columns by 32 rows, portrait); does Finish give a sensible outline; how far off are the wall lengths against a tape. If it fails, log the keyframes (export them as JSON) and replay them through `extractRoom` on the computer to debug without the phone.
-- [ ] Tune the extraction on real data: `FREE_MIN`, closing radius, `STUB`, band `lo`/`hi` in `src/scan/extract.ts`. Furniture against a wall currently pushes the wall inwards.
-- [ ] Add a way to export the raw keyframes from the scan page (for replay and tests).
+- [ ] **Scan the (emptier) renovation house** with `scan.html`, **download the scan data** for each room, and compare wall lengths with a tape. First real try (furnished room, older version) was "not bad but messy"; since then walls come from the band under the ceiling and furniture is detected separately.
+- [ ] Replay the downloaded files (`npm run replay -- file.json`), look at the SVG, tune the constants in `src/scan/extract.ts` (`WALL_BAND_FROM`, `FREE_MIN`, `OCC_MIN`, `STUB`, furniture thresholds). Turn good files into test fixtures (they are big: maybe keep a subsampled copy).
+- [ ] Check on real data: is the world really y-up (the extraction relies on it); is the depth grid orientation right (24 columns by 32 rows, portrait); is the ceiling seen (if not, walls come from a lower band that includes furniture).
 - [ ] Better scan guidance: show which directions are still uncovered, warn when the floor or ceiling was never seen (floor height is estimated from the lowest 2% of points).
 - [ ] Click through the editor in a browser and fix whatever is broken (draw room, set length, right angle, drag, import/export).
 - [ ] Commit, push, enable GitHub Pages (a workflow that runs `npm run build` and publishes `dist/`). `base` is already `./`.
@@ -33,6 +33,7 @@ Status: the whole chain exists. `scan.html` collects depth on the phone, `src/sc
 ## 3D and home use
 
 - [ ] 3D view from the plan with three.js (extrude walls, openings), same stack as plinth3d.
+- [ ] Furniture: rotate boxes, resize, name them, and show heights in 3D. Detected boxes are axis aligned with the room; a diagonal sofa comes out as its bounding box. Tall furniture (wardrobes) reaches the wall band and dents the wall instead.
 - [ ] Furniture placement from a small library, with real dimensions.
 - [ ] Reuse parts of plinth3d (3D viewport, objects) where it makes sense, via copy or a shared package.
 

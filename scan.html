@@ -12,6 +12,8 @@
   p, li { color: #aaa; }
   a { color: #60a5fa; }
   button { font: inherit; padding: .7rem 1.2rem; border: 0; border-radius: .5rem; background: #3b82f6; color: #fff; }
+  button.secondary, #after button { background: #374151; }
+  a.btn { display: inline-block; padding: .7rem 1.2rem; border-radius: .5rem; background: #3b82f6; color: #fff; text-decoration: none; }
   button:disabled { background: #444; color: #888; }
   ul.support { list-style: none; padding: 0; margin: 1rem 0; }
   ul.support li { padding: .2rem 0; color: #eee; }
@@ -33,6 +35,11 @@
   <p>Walk into the room, then follow the on-screen hints. The phone watches the walls with its depth sensor and builds the outline for you. You adjust it afterwards in the editor.</p>
   <ul class="support" id="support"></ul>
   <button id="start" disabled>Scan room</button>
+  <section id="after" hidden>
+    <p id="afterText"></p>
+    <p><a class="btn" href="index.html">Open the editor</a> <button id="download" class="secondary">Download scan data</button></p>
+    <p>"Scan room" again to add another room. The scan data file lets the outline be replayed and debugged on a computer (<code>npm run replay -- file.json</code>).</p>
+  </section>
   <p><a href="index.html">Back to the editor</a></p>
 </main>
 
