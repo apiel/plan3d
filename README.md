@@ -1,1 +1,73 @@
 # plan3d
+
+Floor plans from a phone: capture a room roughly, tighten it with the measurements you trust, view it in 3D.
+
+Static site, everything runs in the browser (TypeScript + Vite, no backend), so it deploys as is to GitHub Pages.
+
+## Idea
+
+Renovation planning keeps going wrong because measurements are forgotten or the plan is never updated. The workflow this app is aiming for:
+
+1. **Scan** a room with the phone (Android, WebXR depth): turn on the spot and walk around, the app builds the outline by itself. The result is approximate: walls a few cm off. (Drawing by hand in the editor also works, for use at a computer.)
+2. **Tighten** it. Type in the measurements you trust (a wall measured with a tape or laser, a door width) and mark right-angle corners. A least-squares solver finds the corner positions that best satisfy everything: measured values count far more than capture values, and unmeasured walls get pulled into line through shared corners and right angles. The more you enter, the more accurate the plan.
+3. **Join** rooms through shared doors to build the whole flat.
+4. **Update** after renovation work by recapturing one room.
+5. **Customise** at home: furniture, 2D and 3D views.
+
+## Run
+
+```
+npm install
+npm run dev        # editor at http://localhost:5173 (Vite picks the next port if taken)
+npm test           # solver tests
+npm run build      # typecheck + production build into dist/
+```
+
+Node 18 is enough (Vite 5, same as plinth3d).
+
+### Pages
+
+- `scan.html` is the phone scan page (the main capture path). Start it, turn slowly aiming at walls, floor and ceiling, walk around the room, then Finish. The outline is added to the plan and the editor opens. A top-down mini map shows what has been seen so far.
+- `index.html` is the plan editor (desktop-friendly): draw a room, click a wall to set its measured length, click a corner to make it a right angle, drag corners, pan and zoom. Plans are kept in `localStorage` and can be exported and imported as JSON.
+- `depth.html` is the phone test page for WebXR depth sensing. See below.
+
+## How the scan works
+
+`src/scan.ts` collects keyframes while you move (every 15 cm or 12° of turning): the camera position and about 700 depth points in world coordinates. `src/scan/extract.ts` then:
+
+1. Finds floor and ceiling from the spread of point heights (ARCore's world is gravity aligned, y up).
+2. Keeps points at wall height and projects them to the floor plane.
+3. Carves free space along every camera-to-point ray (a cell needs 3 rays to count as free, so stray readings cannot open holes) and marks the points as walls.
+4. Cleans the free region (closing, hole filling, largest component), traces its outline and simplifies it.
+5. Finds the dominant wall direction, rotates the capture to match, and snaps walls to it so rooms come out with clean right angles.
+
+The extraction is covered by tests on synthetic rooms (rectangle, rotated rectangle, L shape, noisy readings with stray points). It has **not yet been tried on a real phone**.
+
+## Depth test on a phone
+
+`depth.html` checks whether the phone gives usable depth through WebXR and measures between two points, to compare with a tape. Aim the crosshair at a point and tap, then aim at a second point and tap.
+
+WebXR needs a secure context (Chrome on Android):
+
+- **Over USB:** `npm run dev`, `adb reverse tcp:5173 tcp:5173` (use the port Vite printed), open `http://localhost:5173/depth.html` on the phone.
+- **Same WiFi, no cable:** open `http://<computer-ip>:5173/depth.html` on the phone, after enabling `chrome://flags/#unsafely-treat-insecure-origin-as-secure` for that exact address and relaunching Chrome. `ufw` on the computer may need the port opened for the LAN.
+- **GitHub Pages:** HTTPS, works without flags once deployed.
+
+Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". Not yet compared systematically against a tape, nor on blank white walls.
+
+## Code
+
+| File | What |
+| --- | --- |
+| `src/model.ts` | Plan data model (points, walls, constraints) and edit helpers. Metres, y down. |
+| `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian). `SIGMA` sets how much each kind of fact is trusted. |
+| `src/solver.test.ts` | Solver tests (vitest). |
+| `src/main.ts` | Canvas editor and side panel. |
+| `src/scan.ts` | AR scan page: collects depth keyframes, mini map, adds the room to the plan. |
+| `src/scan/extract.ts` | Keyframes to room outline (see above). |
+| `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
+| `src/storage.ts` | Plan persistence in `localStorage`. |
+| `src/xr.ts` | WebXR matrix helpers shared by the scan code. |
+| `src/depth-test.js` | WebXR depth test page logic (plain JS, predates the scan). |
+
+See [TODO.md](TODO.md) for what is next.

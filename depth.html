@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>plan3d depth test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #111; color: #eee; }
+  main { max-width: 36rem; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+  p { color: #aaa; margin: .25rem 0 1rem; }
+  button { font: inherit; padding: .7rem 1.2rem; border: 0; border-radius: .5rem; background: #3b82f6; color: #fff; }
+  button:disabled { background: #444; color: #888; }
+  ul { list-style: none; padding: 0; margin: 1rem 0; }
+  li { padding: .2rem 0; }
+  .ok::before { content: "✓ "; color: #4ade80; }
+  .ko::before { content: "✗ "; color: #f87171; }
+  pre { background: #1c1c1c; padding: .75rem; border-radius: .5rem; overflow-x: auto; font-size: .85rem; }
+
+  #overlay { display: none; position: fixed; inset: 0; font-family: system-ui, sans-serif; color: #fff; }
+  #overlay.on { display: block; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hud { position: absolute; left: 0; right: 0; top: 0; padding: .75rem 1rem; background: #0008; font-size: .9rem; white-space: pre-line; pointer-events: none; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: .5rem; padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom)); background: #0008; }
+  #bar button { flex: 1; padding: .6rem; }
+  #cross { position: absolute; left: 50%; top: 50%; width: 24px; height: 24px; margin: -12px 0 0 -12px; pointer-events: none;
+    background: linear-gradient(#fff,#fff) center/2px 100% no-repeat, linear-gradient(#fff,#fff) center/100% 2px no-repeat; opacity: .7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>plan3d · depth test</h1>
+  <p>Checks whether this phone gives usable depth in the browser, and lets you measure between two points to compare with a tape.</p>
+  <ul id="support"></ul>
+  <button id="start" disabled>Start AR</button>
+  <p>In AR: aim the crosshair at a point and tap (anywhere, or "Add point"), then aim at another and tap. The distance is shown, and previews live after the first point. A third tap starts a new measurement.</p>
+  <pre id="results">No measurement yet.</pre>
+</main>
+
+<div id="overlay">
+  <canvas id="view"></canvas>
+  <div id="cross"></div>
+  <div id="hud"></div>
+  <div id="bar">
+    <button id="add">Add point</button>
+    <button id="toggleDepth">Depth: on</button>
+    <button id="reset">Reset</button>
+    <button id="exit">Exit</button>
+  </div>
+</div>
+
+<script type="module" src="/src/depth-test.js"></script>
+</body>
+</html>

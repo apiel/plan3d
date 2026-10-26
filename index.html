@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plan3d</title>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>plan3d</h1>
+    <p class="muted">Rough plan from capture, then tighten it with the measurements you trust.</p>
+
+    <section>
+      <div class="row">
+        <a id="scan" class="button" href="scan.html">Scan room (phone)</a>
+      </div>
+      <div class="row">
+        <button id="draw">Draw room</button>
+        <button id="sample">Sample room</button>
+        <button id="fit">Fit</button>
+      </div>
+      <div class="row">
+        <button id="square">Square all corners</button>
+        <button id="clear" class="danger">Clear</button>
+      </div>
+      <div class="row">
+        <button id="export">Export</button>
+        <button id="import">Import</button>
+        <input id="file" type="file" accept="application/json" hidden>
+      </div>
+    </section>
+
+    <section id="selection"></section>
+    <section id="status" class="muted"></section>
+
+    <p class="muted"><a href="depth.html">Depth test page</a> (phone, AR)</p>
+  </aside>
+  <canvas id="canvas"></canvas>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "plan3d",
+  "version": "0.1.0",
+  "description": "Floor plans from a phone: capture rooms, edit the plan, view it in 3D.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/webxr": "^0.5.24",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vitest": "^1.6.0"
+  }
+}
