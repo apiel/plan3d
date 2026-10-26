@@ -46,3 +46,8 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - [ ] Convert the editor to React like plinth3d if the UI grows.
 - [ ] Import RoomPlan / Polycam / Magicplan exports.
+
+# IDEA from dev
+
+- when camera is on there should be a cross/point in the center and then button which allow us to place corner of the room, to place door, place window (place furniture)
+  this might help a lot the planning deduction...
