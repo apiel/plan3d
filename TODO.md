@@ -16,13 +16,13 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 ## Plan editor
 
 - [ ] Detect doors from the scan (gaps in the wall band seen from inside) instead of leaving them as ragged edges.
-- [ ] Doors and windows: openings exist (from scan marks, drawn on the wall). Still missing: add/edit/delete them in the editor, measured sizes as constraints, window sill and height.
+- [ ] Doors and windows: openings come from scan marks, drawn with plan symbols; type, width and delete in the editor. Added by hand with the door/window tools. Still missing: slide it along the wall, flip the door swing/hinge side, measured sizes as constraints, window sill and height.
 - [ ] Join rooms through a shared door: pick the same door in two rooms, align them, wall thickness between.
 - [ ] More constraints: parallel walls, horizontal/vertical, equal length, fixed angle (not only 90°).
 - [ ] Highlight which walls are least certain (e.g. from the solver covariance) so you know what to measure next.
 - [ ] Undo/redo.
 - [ ] Multiple rooms and a flat/house level, several plans, rename.
-- [ ] Touch support on the editor (pinch zoom, pan) for use on the phone.
+- [x] Touch support on the editor (pinch zoom, pan, bigger tap areas): done, to check on the phone.
 - [ ] Ceiling height and room name per room.
 
 ## Versions / updates
@@ -34,7 +34,7 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 ## 3D and home use
 
 - [ ] 3D view from the plan with three.js (extrude walls, openings), same stack as plinth3d.
-- [ ] Furniture: rotate boxes, resize, name them, and show heights in 3D. Detected boxes are axis aligned with the room; a diagonal sofa comes out as its bounding box. Tall furniture (wardrobes) reaches the wall band and dents the wall instead.
+- [ ] Furniture: shelved for now (the scan still detects boxes, the plan leaves them out; the editor drops old ones on load). When it comes back: rotate boxes, resize, name them, and show heights in 3D. Detected boxes are axis aligned with the room; a diagonal sofa comes out as its bounding box. Tall furniture (wardrobes) reaches the wall band and dents the wall instead.
 - [ ] Furniture placement from a small library, with real dimensions.
 - [ ] Reuse parts of plinth3d (3D viewport, objects) where it makes sense, via copy or a shared package.
 

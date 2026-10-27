@@ -461,7 +461,7 @@ function addRoomToPlan(scan: RoomScan): void {
   plan.points.push(...room.points);
   plan.walls.push(...room.walls);
   plan.constraints.push(...room.constraints);
-  plan.furniture.push(...scan.furniture.map((f) => ({ id: newId(), ...f, x: f.x + shift })));
+  // furniture boxes (scan.furniture) are left out of the plan for now
   for (const o of scan.openings) {
     const a = room.points[o.wall].id;
     const b = room.points[(o.wall + 1) % room.points.length].id;

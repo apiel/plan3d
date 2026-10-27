@@ -1,5 +1,6 @@
 import './styles.css';
 import {
+  Opening,
   Plan,
   Vec,
   addPoint,
@@ -7,12 +8,12 @@ import {
   cornerNeighbours,
   dist,
   emptyPlan,
+  newId,
   findDistance,
   findRightAngle,
   parse,
   pointById,
   removePoint,
-  roomFromCorners,
   serialize,
   setDistance,
   toggleRightAngle,
@@ -21,31 +22,43 @@ import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { SolveResult, apply, solve } from './solver';
 import { load, save } from './storage';
 
-const POINT_HIT = 12; // px
-const WALL_HIT = 8; // px
+const POINT_HIT = 12; // px, with a mouse
+const WALL_HIT = 8; // px, with a mouse
+const TOUCH_HIT = 2.2; // fingers are less precise: hit areas grow by this much
+const OPENING_PX = 7; // drawn wall thickness at a door or window
+const NEW_WIDTH = { door: 0.8, window: 1.0 }; // metres, for doors and windows added by hand
 
 type Selection =
   | { kind: 'point'; id: string }
   | { kind: 'wall'; a: string; b: string }
-  | { kind: 'furniture'; id: string }
+  | { kind: 'opening'; id: string }
   | null;
+type Tool = 'wall' | 'door' | 'window' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
-  | { kind: 'furniture'; id: string; x: number; y: number; moved: boolean }
   | { kind: 'pan'; x: number; y: number }
+  | { kind: 'pinch'; d: number; mid: Vec }
   | null;
 
 const el = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const canvas = el<HTMLCanvasElement>('canvas');
 const ctx = canvas.getContext('2d')!;
+const sheet = el('sheet');
 
 let plan: Plan = load();
+plan.furniture = []; // furniture is shelved for now: drop boxes older scans added
 let view = { scale: 80, ox: 40, oy: 40 };
 let selection: Selection = null;
 let drag: Drag = null;
-let drawing: string[] | null = null; // point ids of the room being drawn
+let tool: Tool = null;
+/** With the wall tool: the corner the next wall starts from. */
+let wallFrom: string | null = null;
 let cursor: Vec = { x: 0, y: 0 };
 let lastSolve: SolveResult | null = null;
+/** Wall length labels as drawn, so tapping a number edits that wall. */
+let labelBoxes: { a: string; b: string; x: number; y: number; w: number; h: number }[] = [];
+/** Fingers or the mouse currently down, for pinch zoom. */
+const pointers = new Map<number, Vec>();
 
 // ---------- coordinates ----------
 
@@ -65,7 +78,7 @@ function fit(): void {
   const minY = Math.min(...ys);
   const bw = Math.max(Math.max(...xs) - minX, 0.5);
   const bh = Math.max(Math.max(...ys) - minY, 0.5);
-  const scale = Math.min((w - 140) / bw, (h - 140) / bh, 200);
+  const scale = Math.min((w - 200) / bw, (h - 200) / bh, 200); // room for labels outside the walls
   view = { scale, ox: (w - bw * scale) / 2 - minX * scale, oy: (h - bh * scale) / 2 - minY * scale };
 }
 
@@ -80,14 +93,14 @@ function resolve(): void {
   }
   save(plan);
   render();
-  renderPanel();
+  renderUi();
 }
 
 // ---------- hit testing ----------
 
-function hitPoint(sx: number, sy: number): string | undefined {
+function hitPoint(sx: number, sy: number, tol: number): string | undefined {
   let best: string | undefined;
-  let bestD = POINT_HIT;
+  let bestD = POINT_HIT * tol;
   for (const p of plan.points) {
     const s = toScreen(p);
     const d = Math.hypot(s.x - sx, s.y - sy);
@@ -107,9 +120,11 @@ function segDist(px: number, py: number, a: Vec, b: Vec): number {
   return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
 }
 
-function hitWall(sx: number, sy: number): { a: string; b: string } | undefined {
+function hitWall(sx: number, sy: number, tol: number): { a: string; b: string } | undefined {
+  const label = labelBoxes.find((l) => Math.abs(sx - l.x) <= l.w / 2 + 4 && Math.abs(sy - l.y) <= l.h / 2 + 4);
+  if (label) return label;
   let best: { a: string; b: string } | undefined;
-  let bestD = WALL_HIT;
+  let bestD = WALL_HIT * tol;
   for (const w of plan.walls) {
     const a = pointById(plan, w.a);
     const b = pointById(plan, w.b);
@@ -123,14 +138,41 @@ function hitWall(sx: number, sy: number): { a: string; b: string } | undefined {
   return best;
 }
 
-function hitFurniture(sx: number, sy: number): string | undefined {
-  const w = toWorld(sx, sy);
-  // last drawn is on top
-  for (let i = plan.furniture.length - 1; i >= 0; i--) {
-    const f = plan.furniture[i];
-    if (w.x >= f.x && w.x <= f.x + f.w && w.y >= f.y && w.y <= f.y + f.d) return f.id;
+function hitOpening(sx: number, sy: number, tol: number): string | undefined {
+  for (const o of plan.openings) {
+    const g = openingGeometry(o);
+    if (g && segDist(sx, sy, toScreen(g.p1), toScreen(g.p2)) <= WALL_HIT * tol) return o.id;
   }
   return undefined;
+}
+
+// ---------- geometry ----------
+
+/** Whether a point is inside one of the closed rooms (even-odd over all walls). */
+function insideRooms(p: Vec): boolean {
+  let inside = false;
+  for (const w of plan.walls) {
+    const a = pointById(plan, w.a);
+    const b = pointById(plan, w.b);
+    if (!a || !b) continue;
+    if (a.y > p.y !== b.y > p.y && p.x < a.x + ((p.y - a.y) * (b.x - a.x)) / (b.y - a.y)) inside = !inside;
+  }
+  return inside;
+}
+
+/** Where a door or window sits: its two ends, the wall direction and the normal pointing into the room. */
+function openingGeometry(o: Opening): { p1: Vec; p2: Vec; u: Vec; n: Vec } | undefined {
+  const a = pointById(plan, o.a);
+  const b = pointById(plan, o.b);
+  if (!a || !b) return undefined;
+  const len = dist(a, b) || 1;
+  const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+  const p1 = { x: a.x + u.x * o.at, y: a.y + u.y * o.at };
+  const p2 = { x: p1.x + u.x * o.width, y: p1.y + u.y * o.width };
+  let n = { x: -u.y, y: u.x };
+  const probe = { x: (p1.x + p2.x) / 2 + n.x * 0.05, y: (p1.y + p2.y) / 2 + n.y * 0.05 };
+  if (!insideRooms(probe)) n = { x: -n.x, y: -n.y };
+  return { p1, p2, u, n };
 }
 
 // ---------- rendering ----------
@@ -142,7 +184,8 @@ function resizeCanvas(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-function label(text: string, at: Vec, color: string, bold: boolean): void {
+/** Draws a text label with a dark backing and returns its size. */
+function label(text: string, at: Vec, color: string, bold: boolean): { w: number; h: number } {
   ctx.font = `${bold ? 'bold ' : ''}13px system-ui, sans-serif`;
   const w = ctx.measureText(text).width + 8;
   ctx.fillStyle = '#14161acc';
@@ -151,6 +194,7 @@ function label(text: string, at: Vec, color: string, bold: boolean): void {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, at.x, at.y);
+  return { w, h: 18 };
 }
 
 function drawGrid(): void {
@@ -174,71 +218,107 @@ function drawGrid(): void {
   ctx.stroke();
 }
 
+const line = (a: Vec, b: Vec): void => {
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+};
+
+/**
+ * Doors and windows the way plans draw them: the wall is cut, a door shows
+ * its leaf open at 90 degrees and the arc it swings through, a window shows
+ * thin lines across the opening.
+ */
+function drawOpening(o: Opening): void {
+  const g = openingGeometry(o);
+  if (!g) return;
+  const s1 = toScreen(g.p1);
+  const s2 = toScreen(g.p2);
+  const selected = selection?.kind === 'opening' && selection.id === o.id;
+  const color = selected ? '#60a5fa' : '#e6e8eb';
+  const t = OPENING_PX / 2;
+  const n = g.n; // screen and plan axes point the same way, so world directions work on screen
+
+  // cut the wall
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = '#14161a';
+  ctx.lineWidth = OPENING_PX + 2;
+  line(s1, s2);
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = selected ? 2.5 : 1.5;
+  // jambs
+  for (const s of [s1, s2]) line({ x: s.x - n.x * t, y: s.y - n.y * t }, { x: s.x + n.x * t, y: s.y + n.y * t });
+
+  if (o.type === 'window') {
+    for (const k of [-t, 0, t]) line({ x: s1.x + n.x * k, y: s1.y + n.y * k }, { x: s2.x + n.x * k, y: s2.y + n.y * k });
+    return;
+  }
+  // door: leaf hinged at the first end, open into the room, and its swing
+  const r = o.width * view.scale;
+  const leaf = { x: s1.x + n.x * r, y: s1.y + n.y * r };
+  ctx.lineWidth = selected ? 3 : 2;
+  line(s1, leaf);
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  const from = Math.atan2(n.y, n.x);
+  const to = Math.atan2(g.u.y, g.u.x);
+  let sweep = to - from;
+  while (sweep > Math.PI) sweep -= 2 * Math.PI;
+  while (sweep < -Math.PI) sweep += 2 * Math.PI;
+  ctx.beginPath();
+  ctx.arc(s1.x, s1.y, r, from, to, sweep < 0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
 function render(): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
   ctx.clearRect(0, 0, w, h);
   drawGrid();
 
-  // furniture, under the walls
-  for (const f of plan.furniture) {
-    const s = toScreen(f);
-    const selected = selection?.kind === 'furniture' && selection.id === f.id;
-    ctx.fillStyle = selected ? '#1e3a5f' : '#262b34';
-    ctx.strokeStyle = selected ? '#60a5fa' : '#4b5563';
-    ctx.lineWidth = selected ? 2 : 1;
-    ctx.fillRect(s.x, s.y, f.w * view.scale, f.d * view.scale);
-    ctx.strokeRect(s.x, s.y, f.w * view.scale, f.d * view.scale);
-    if (f.w * view.scale > 50 && f.d * view.scale > 22) {
-      label(`${(f.w * 100).toFixed(0)}×${(f.d * 100).toFixed(0)}`, { x: s.x + (f.w * view.scale) / 2, y: s.y + (f.d * view.scale) / 2 }, '#8d95a1', false);
-    }
-  }
-
   // walls
+  ctx.lineCap = 'round';
   for (const wall of plan.walls) {
     const a = pointById(plan, wall.a);
     const b = pointById(plan, wall.b);
     if (!a || !b) continue;
     const measured = findDistance(plan, wall.a, wall.b) !== undefined;
     const selected = selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a));
-    const sa = toScreen(a);
-    const sb = toScreen(b);
     ctx.lineWidth = selected ? 5 : measured ? 4 : 3;
     ctx.strokeStyle = selected ? '#60a5fa' : measured ? '#4ade80' : '#9aa3b0';
     ctx.setLineDash(measured ? [] : [8, 5]);
-    ctx.beginPath();
-    ctx.moveTo(sa.x, sa.y);
-    ctx.lineTo(sb.x, sb.y);
-    ctx.stroke();
+    line(toScreen(a), toScreen(b));
     ctx.setLineDash([]);
-    const len = dist(a, b);
-    label(`${measured ? '' : '~'}${(len * 100).toFixed(0)} cm`, { x: (sa.x + sb.x) / 2, y: (sa.y + sb.y) / 2 }, measured ? '#4ade80' : '#c3c9d2', measured);
   }
 
-  // doors and windows, over their wall
-  for (const o of plan.openings) {
-    const a = pointById(plan, o.a);
-    const b = pointById(plan, o.b);
+  for (const o of plan.openings) drawOpening(o);
+
+  // wall lengths, over the openings, and remembered for tapping
+  labelBoxes = [];
+  for (const wall of plan.walls) {
+    const a = pointById(plan, wall.a);
+    const b = pointById(plan, wall.b);
     if (!a || !b) continue;
-    const len = dist(a, b) || 1;
-    const at = (d: number) => toScreen({ x: a.x + ((b.x - a.x) * d) / len, y: a.y + ((b.y - a.y) * d) / len });
-    const s1 = at(o.at);
-    const s2 = at(o.at + o.width);
-    const color = o.type === 'door' ? '#f97316' : '#22d3ee';
-    ctx.lineWidth = 7;
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(s1.x, s1.y);
-    ctx.lineTo(s2.x, s2.y);
-    ctx.stroke();
-    if (o.width * view.scale > 40) {
-      label(`${o.type === 'door' ? 'door' : 'window'} ${(o.width * 100).toFixed(0)}`, { x: (s1.x + s2.x) / 2, y: (s1.y + s2.y) / 2 + 16 }, color, false);
-    }
+    const measured = findDistance(plan, wall.a, wall.b) !== undefined;
+    const text = `${measured ? '' : '~'}${(dist(a, b) * 100).toFixed(0)} cm`;
+    // outside the room, clear of doors and windows drawn on the wall
+    const u = unit(sub(b, a));
+    let n = { x: -u.y, y: u.x };
+    if (insideRooms({ x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
+    ctx.font = `${measured ? 'bold ' : ''}13px system-ui, sans-serif`;
+    const away = Math.abs(n.x) * (ctx.measureText(text).width / 2 + 10) + Math.abs(n.y) * 15;
+    const at = { x: (toScreen(a).x + toScreen(b).x) / 2 + n.x * away, y: (toScreen(a).y + toScreen(b).y) / 2 + n.y * away };
+    const size = label(text, at, measured ? '#4ade80' : '#c3c9d2', measured);
+    labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
   // right-angle markers
   ctx.strokeStyle = '#4ade80';
   ctx.lineWidth = 2;
+  ctx.lineCap = 'butt';
   for (const p of plan.points) {
     if (!findRightAngle(plan, p.id)) continue;
     const n = cornerNeighbours(plan, p.id);
@@ -257,18 +337,15 @@ function render(): void {
     ctx.stroke();
   }
 
-  // draft room
-  if (drawing && drawing.length) {
-    const last = pointById(plan, drawing[drawing.length - 1])!;
+  // the wall being drawn, from its first corner to the finger
+  if (wallFrom) {
+    const last = pointById(plan, wallFrom)!;
     const sl = toScreen(last);
     const sc = toScreen(cursor);
     ctx.setLineDash([4, 4]);
     ctx.strokeStyle = '#60a5fa';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(sl.x, sl.y);
-    ctx.lineTo(sc.x, sc.y);
-    ctx.stroke();
+    line(sl, sc);
     ctx.setLineDash([]);
     label(`${(dist(last, cursor) * 100).toFixed(0)} cm`, { x: (sl.x + sc.x) / 2, y: (sl.y + sc.y) / 2 }, '#60a5fa', false);
   }
@@ -290,100 +367,146 @@ const unit = (v: Vec): Vec => {
   return { x: v.x / l, y: v.y / l };
 };
 
-// ---------- side panel ----------
+// ---------- bottom sheet and the rest of the UI ----------
 
-function renderPanel(): void {
-  const sel = el('selection');
-  const measuredWalls = plan.walls.filter((w) => findDistance(plan, w.a, w.b) !== undefined).length;
-  const squared = plan.points.filter((p) => findRightAngle(plan, p.id)).length;
+const head = (title: string, detail = '') =>
+  `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
 
-  if (drawing) {
-    sel.innerHTML = `<h2>Drawing</h2><p class="muted">Click to add corners. Click the first corner to close the room. Esc to cancel.</p>`;
-  } else if (selection?.kind === 'wall') {
-    const a = pointById(plan, selection.a);
-    const b = pointById(plan, selection.b);
-    if (a && b) {
-      const measured = findDistance(plan, selection.a, selection.b);
-      sel.innerHTML = `
-        <h2>Wall</h2>
-        <p>${(dist(a, b) * 100).toFixed(1)} cm · ${measured !== undefined ? '<span class="ok">measured</span>' : '<span class="muted">estimated</span>'}</p>
-        <div class="row">
-          <input id="len" type="number" step="0.1" min="1" placeholder="cm" value="${measured !== undefined ? (measured * 100).toFixed(1) : ''}">
-          <button id="setLen">Set length</button>
-          <button id="clearLen" ${measured === undefined ? 'disabled' : ''}>Clear</button>
-        </div>`;
-      const input = el<HTMLInputElement>('len');
-      const set = () => {
-        const cm = parseFloat(input.value);
-        if (cm > 0 && selection?.kind === 'wall') {
-          setDistance(plan, selection.a, selection.b, cm / 100);
-          resolve();
-        }
-      };
-      el('setLen').onclick = set;
-      input.onkeydown = (e) => e.key === 'Enter' && set();
+/**
+ * A number field in cm with an OK button; `onSet` gets metres. It is a form,
+ * so the keyboard's Done/Enter submits it. Tapping OK must not take the focus
+ * first: on a phone the keyboard would close, the sheet would slide down,
+ * and the tap would land on nothing.
+ */
+function numberRow(value: number | undefined, placeholder: number, onSet: (m: number) => void): string {
+  queueMicrotask(() => {
+    const input = el<HTMLInputElement>('num');
+    el('numForm').onsubmit = (e) => {
+      e.preventDefault();
+      const cm = parseFloat(input.value.replace(',', '.'));
+      if (cm > 0) onSet(cm / 100);
+    };
+    el('numOk').onmousedown = (e) => e.preventDefault();
+    el('numOk').onpointerdown = (e) => e.preventDefault();
+    input.focus();
+    input.select();
+  });
+  return `<form id="numForm" class="row"><label class="num"><input id="num" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="${placeholder.toFixed(0)}" value="${value !== undefined ? +(value * 100).toFixed(1) : ''}"> cm</label><button id="numOk" class="primary">OK</button></form>`;
+}
+
+function renderUi(): void {
+  // only rebuild the sheet when what it shows changed, so typing is not interrupted
+  const key = JSON.stringify(selection);
+  if (sheet.dataset.key !== key) {
+    sheet.dataset.key = key;
+    renderSheet();
+  }
+  el('empty').hidden = plan.points.length > 0 || tool !== null;
+  el('scan').hidden = !sheet.hidden || tool !== null;
+  for (const t of ['wall', 'door', 'window'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
+
+  // one line at the top: what the tool expects, or measurements that disagree
+  const conflicts = (lastSolve?.conflicts ?? []).filter((c) => c.constraint.type === 'distance');
+  const info = el('info');
+  info.classList.toggle('warn', !tool);
+  info.textContent =
+    tool === 'wall'
+      ? wallFrom
+        ? 'Tap the next corner. Tap the last corner again, or an existing corner, to stop.'
+        : 'Tap where the wall starts (tap a corner to start from it).'
+      : tool
+        ? `Tap the wall where the ${tool} goes.`
+        : conflicts.length
+          ? `Measurements disagree: ${conflicts
+              .map((c) => (c.constraint.type === 'distance' ? `${(c.constraint.value * 100).toFixed(0)} cm wall is ${(c.error * 100).toFixed(1)} cm off` : ''))
+              .join(', ')}`
+          : '';
+  info.hidden = !info.textContent;
+}
+
+function renderSheet(): void {
+  sheet.hidden = false;
+  const sel = selection;
+  if (sel?.kind === 'wall') {
+    const a = pointById(plan, sel.a);
+    const b = pointById(plan, sel.b);
+    if (!a || !b) return closeSheet();
+    const measured = findDistance(plan, sel.a, sel.b);
+    sheet.innerHTML =
+      head('Wall length', measured !== undefined ? '<span class="ok">measured</span>' : `estimated ${(dist(a, b) * 100).toFixed(0)} cm`) +
+      numberRow(measured, dist(a, b) * 100, (m) => {
+        setDistance(plan, sel.a, sel.b, m);
+        closeSheet();
+        resolve();
+      }) +
+      (measured !== undefined ? `<div class="row"><button id="clearLen" class="link">Forget this measurement</button></div>` : '');
+    if (measured !== undefined) {
       el('clearLen').onclick = () => {
-        if (selection?.kind === 'wall') clearDistance(plan, selection.a, selection.b);
+        clearDistance(plan, sel.a, sel.b);
+        closeSheet();
         resolve();
       };
     }
-  } else if (selection?.kind === 'furniture') {
-    const id = selection.id;
-    const f = plan.furniture.find((x) => x.id === id);
-    if (f) {
-      sel.innerHTML = `
-        <h2>Furniture</h2>
-        <p>${(f.w * 100).toFixed(0)} × ${(f.d * 100).toFixed(0)} cm, ${(f.h * 100).toFixed(0)} cm high</p>
-        <div class="row"><button id="delF" class="danger">Delete</button></div>
-        <p class="muted">Drag to move it.</p>`;
-      el('delF').onclick = () => {
-        plan.furniture = plan.furniture.filter((x) => x.id !== id);
-        selection = null;
-        resolve();
-      };
-    }
-  } else if (selection?.kind === 'point') {
-    const id = selection.id;
-    const canSquare = cornerNeighbours(plan, id) !== undefined;
-    sel.innerHTML = `
-      <h2>Corner</h2>
-      <div class="row">
-        <button id="angle" ${canSquare ? '' : 'disabled'} class="${findRightAngle(plan, id) ? 'on' : ''}">Right angle</button>
-        <button id="del" class="danger">Delete corner</button>
-      </div>
-      <p class="muted">Drag to move it. Click a wall to enter its measured length.</p>`;
+  } else if (sel?.kind === 'opening') {
+    const o = plan.openings.find((x) => x.id === sel.id);
+    if (!o) return closeSheet();
+    sheet.innerHTML =
+      head(o.type === 'door' ? 'Door' : 'Window', 'width') +
+      `<div class="row"><div class="seg"><button id="isDoor" class="${o.type === 'door' ? 'on' : ''}">Door</button><button id="isWindow" class="${o.type === 'window' ? 'on' : ''}">Window</button></div></div>` +
+      numberRow(o.width, o.width * 100, (m) => {
+        // keep it centred where it was
+        o.at = Math.max(0, o.at + (o.width - m) / 2);
+        o.width = m;
+        save(plan);
+        closeSheet();
+        render();
+      }) +
+      `<div class="row"><button id="delO" class="link danger">Delete</button></div>`;
+    const setType = (type: Opening['type']) => {
+      o.type = type;
+      save(plan);
+      sheet.dataset.key = '';
+      render();
+      renderUi();
+    };
+    el('isDoor').onclick = () => setType('door');
+    el('isWindow').onclick = () => setType('window');
+    el('delO').onclick = () => {
+      plan.openings = plan.openings.filter((x) => x.id !== sel.id);
+      closeSheet();
+      resolve();
+    };
+  } else if (sel?.kind === 'point') {
+    const canSquare = cornerNeighbours(plan, sel.id) !== undefined;
+    const square = findRightAngle(plan, sel.id);
+    sheet.innerHTML =
+      head('Corner', 'drag to move') +
+      `<div class="row"><button id="angle" ${canSquare ? '' : 'disabled'} class="${square ? 'on' : ''}">${square ? 'Right angle ✓' : 'Make it a right angle'}</button></div>` +
+      `<div class="row"><button id="del" class="link danger">Delete corner</button></div>`;
     el('angle').onclick = () => {
-      toggleRightAngle(plan, id);
+      toggleRightAngle(plan, sel.id);
+      sheet.dataset.key = '';
       resolve();
     };
     el('del').onclick = () => {
-      removePoint(plan, id);
-      selection = null;
+      removePoint(plan, sel.id);
+      closeSheet();
       resolve();
     };
   } else {
-    sel.innerHTML = `<h2>Selection</h2><p class="muted">Click a wall to set its measured length, or a corner to square it. Drag corners to move them, drag the background to pan, scroll to zoom.</p>`;
+    sheet.hidden = true;
+    sheet.innerHTML = '';
+    return;
   }
+  el('close').onclick = () => {
+    closeSheet();
+    render();
+  };
+}
 
-  const status = el('status');
-  const conflicts = lastSolve?.conflicts ?? [];
-  status.innerHTML = `
-    <h2>Plan</h2>
-    <div>${plan.points.length} corners · ${plan.walls.length} walls · ${plan.furniture.length} furniture</div>
-    <div>${measuredWalls} measured · ${squared} squared corners</div>
-    ${
-      conflicts.length
-        ? `<div class="warn">Measurements disagree:</div><ul class="conflicts">${conflicts
-            .map((c) => {
-              const k = c.constraint;
-              return k.type === 'distance' ? `<li class="warn">${(k.value * 100).toFixed(1)} cm wall is ${(c.error * 100).toFixed(1)} cm off</li>` : '';
-            })
-            .join('')}</ul>`
-        : ''
-    }`;
-
-  el('draw').classList.toggle('on', drawing !== null);
-  el('draw').textContent = drawing ? 'Cancel drawing' : 'Draw room';
+function closeSheet(): void {
+  selection = null;
+  renderUi();
 }
 
 // ---------- interaction ----------
@@ -393,74 +516,133 @@ function eventPos(e: PointerEvent | WheelEvent): { x: number; y: number } {
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-function finishDrawing(close: boolean): void {
-  if (drawing && close && drawing.length >= 3) {
-    plan.walls.push({ a: drawing[drawing.length - 1], b: drawing[0] });
-  } else if (drawing) {
-    // cancelled or too short: drop the corners that were just added
-    for (const id of drawing) removePoint(plan, id);
-  }
-  drawing = null;
+const hasWall = (id: string) => plan.walls.some((w) => w.a === id || w.b === id);
+
+/** Ends the wall being drawn; a lone first corner with no wall yet goes away. */
+function stopWall(): void {
+  if (wallFrom && !hasWall(wallFrom)) removePoint(plan, wallFrom);
+  wallFrom = null;
+}
+
+function setTool(t: Tool): void {
+  stopWall();
+  tool = t;
+  selection = null;
   resolve();
 }
 
+/** Wall tool: each tap is a corner; walls join consecutive taps. */
+function wallTap(pos: Vec, tol: number): void {
+  const hit = hitPoint(pos.x, pos.y, tol);
+  if (hit && hit === wallFrom) {
+    stopWall();
+  } else {
+    const id = hit ?? addPoint(plan, toWorld(pos.x, pos.y)).id;
+    if (!wallFrom) {
+      wallFrom = id;
+    } else {
+      if (!plan.walls.some((w) => (w.a === wallFrom && w.b === id) || (w.a === id && w.b === wallFrom))) plan.walls.push({ a: wallFrom, b: id });
+      // ending on a corner that already had walls closes the shape
+      wallFrom = hit && plan.walls.filter((w) => w.a === id || w.b === id).length > 1 ? null : id;
+    }
+  }
+  resolve();
+}
+
+/** Door and window tools: put one, centred where the wall was tapped, then show it for its width. */
+function openingTap(pos: Vec, tol: number): void {
+  const w = hitWall(pos.x, pos.y, tol);
+  const a = w && pointById(plan, w.a);
+  const b = w && pointById(plan, w.b);
+  if (!w || !a || !b || (tool !== 'door' && tool !== 'window')) return;
+  const len = dist(a, b);
+  const p = toWorld(pos.x, pos.y);
+  const along = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len || 1);
+  const width = Math.min(NEW_WIDTH[tool], len);
+  const o: Opening = { id: newId(), type: tool, a: w.a, b: w.b, at: Math.max(0, Math.min(len - width, along - width / 2)), width };
+  plan.openings.push(o);
+  tool = null;
+  selection = { kind: 'opening', id: o.id };
+  save(plan);
+  render();
+  renderUi();
+}
+
+function zoomAt(at: Vec, factor: number): void {
+  const before = toWorld(at.x, at.y);
+  view.scale = Math.max(10, Math.min(500, view.scale * factor));
+  view.ox = at.x - before.x * view.scale;
+  view.oy = at.y - before.y * view.scale;
+}
+
+function pinchState(): { d: number; mid: Vec } {
+  const [a, b] = [...pointers.values()];
+  return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+}
+
+let selectionBeforeTouch: Selection = null;
+
 canvas.addEventListener('pointerdown', (e) => {
   const pos = eventPos(e);
-  cursor = toWorld(pos.x, pos.y);
+  pointers.set(e.pointerId, pos);
   canvas.setPointerCapture(e.pointerId);
+  e.preventDefault(); // no emulated mouse events: they would move the focus away from the number field
+  el('menu').hidden = true;
 
-  if (drawing) {
-    if (drawing.length >= 3 && hitPoint(pos.x, pos.y) === drawing[0]) {
-      finishDrawing(true);
-      return;
-    }
-    const p = addPoint(plan, toWorld(pos.x, pos.y));
-    if (drawing.length) plan.walls.push({ a: drawing[drawing.length - 1], b: p.id });
-    drawing.push(p.id);
+  // a second finger turns whatever the first one started into a pinch
+  if (pointers.size === 2) {
+    if (drag?.kind === 'point' && drag.moved) resolve();
+    selection = selectionBeforeTouch;
+    drag = { kind: 'pinch', ...pinchState() };
     render();
+    renderUi();
     return;
   }
+  if (pointers.size > 2) return;
 
-  const pid = hitPoint(pos.x, pos.y);
+  cursor = toWorld(pos.x, pos.y);
+  const tol = e.pointerType === 'touch' ? TOUCH_HIT : 1;
+  selectionBeforeTouch = selection;
+
+  if (tool === 'wall') return wallTap(pos, tol);
+  if (tool) return openingTap(pos, tol);
+
+  const pid = hitPoint(pos.x, pos.y, tol);
+  const oid = pid ? undefined : hitOpening(pos.x, pos.y, tol);
+  const w = pid || oid ? undefined : hitWall(pos.x, pos.y, tol);
   if (pid) {
     selection = { kind: 'point', id: pid };
     drag = { kind: 'point', id: pid, moved: false };
+  } else if (oid) {
+    selection = { kind: 'opening', id: oid };
+  } else if (w) {
+    selection = { kind: 'wall', a: w.a, b: w.b };
   } else {
-    const w = hitWall(pos.x, pos.y);
-    const fid = w ? undefined : hitFurniture(pos.x, pos.y);
-    if (w) {
-      selection = { kind: 'wall', a: w.a, b: w.b };
-    } else if (fid) {
-      selection = { kind: 'furniture', id: fid };
-      drag = { kind: 'furniture', id: fid, x: cursor.x, y: cursor.y, moved: false };
-    } else {
-      selection = null;
-      drag = { kind: 'pan', x: pos.x, y: pos.y };
-    }
+    selection = null;
+    drag = { kind: 'pan', x: pos.x, y: pos.y };
   }
   render();
-  renderPanel();
+  renderUi();
 });
 
 canvas.addEventListener('pointermove', (e) => {
   const pos = eventPos(e);
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, pos);
   cursor = toWorld(pos.x, pos.y);
-  if (drag?.kind === 'point') {
+  if (drag?.kind === 'pinch') {
+    if (pointers.size < 2) return;
+    const now = pinchState();
+    zoomAt(drag.mid, now.d / drag.d);
+    view.ox += now.mid.x - drag.mid.x;
+    view.oy += now.mid.y - drag.mid.y;
+    drag = { kind: 'pinch', ...now };
+    render();
+  } else if (drag?.kind === 'point') {
     const p = pointById(plan, drag.id);
     if (p) {
       p.x = cursor.x;
       p.y = cursor.y;
       p.sensor = { x: cursor.x, y: cursor.y };
-      drag.moved = true;
-    }
-    render();
-  } else if (drag?.kind === 'furniture') {
-    const f = plan.furniture.find((x) => x.id === (drag as { id: string }).id);
-    if (f) {
-      f.x += cursor.x - drag.x;
-      f.y += cursor.y - drag.y;
-      drag.x = cursor.x;
-      drag.y = cursor.y;
       drag.moved = true;
     }
     render();
@@ -470,47 +652,49 @@ canvas.addEventListener('pointermove', (e) => {
     drag.x = pos.x;
     drag.y = pos.y;
     render();
-  } else if (drawing) {
+  } else if (wallFrom) {
     render();
   }
 });
 
-canvas.addEventListener('pointerup', () => {
+const pointerEnd = (e: PointerEvent) => {
+  pointers.delete(e.pointerId);
+  if (drag?.kind === 'pinch') {
+    // lifting one finger of a pinch ends it; the other one does nothing until lifted
+    if (!pointers.size) drag = null;
+    return;
+  }
   const moved = drag?.kind === 'point' && drag.moved;
-  const movedFurniture = drag?.kind === 'furniture' && drag.moved;
   drag = null;
   if (moved) resolve();
-  else if (movedFurniture) save(plan);
-});
+};
+canvas.addEventListener('pointerup', pointerEnd);
+canvas.addEventListener('pointercancel', pointerEnd);
 
 canvas.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    const pos = eventPos(e);
-    const before = toWorld(pos.x, pos.y);
-    view.scale = Math.max(10, Math.min(500, view.scale * Math.exp(-e.deltaY * 0.0015)));
-    view.ox = pos.x - before.x * view.scale;
-    view.oy = pos.y - before.y * view.scale;
+    zoomAt(eventPos(e), Math.exp(-e.deltaY * 0.0015));
     render();
   },
   { passive: false }
 );
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement) return;
-  if (e.key === 'Escape' && drawing) finishDrawing(false);
-  if ((e.key === 'Delete' || e.key === 'Backspace') && selection?.kind === 'point') {
-    removePoint(plan, selection.id);
-    selection = null;
-    resolve();
+  if (e.target instanceof HTMLInputElement) {
+    if (e.key === 'Escape') closeSheet();
+    return;
   }
-  if ((e.key === 'Delete' || e.key === 'Backspace') && selection?.kind === 'furniture') {
-    const id = selection.id;
-    plan.furniture = plan.furniture.filter((x) => x.id !== id);
-    selection = null;
-    resolve();
-  }
+  if (e.key === 'Escape' && tool) setTool(null);
+  else if (e.key === 'Escape') closeSheet();
+  if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+  const sel = selection;
+  if (sel?.kind === 'point') removePoint(plan, sel.id);
+  else if (sel?.kind === 'opening') plan.openings = plan.openings.filter((x) => x.id !== sel.id);
+  else return;
+  selection = null;
+  resolve();
 });
 
 window.addEventListener('resize', () => {
@@ -518,7 +702,7 @@ window.addEventListener('resize', () => {
   render();
 });
 
-// ---------- toolbar ----------
+// ---------- scan button ----------
 
 // the AR session must be asked for inside the tap, so support is checked up front
 const scanMissing = missingForScan();
@@ -546,33 +730,21 @@ el('scan').onclick = async () => {
   }
 };
 
+// ---------- menu ----------
+
+el('menuBtn').onclick = () => {
+  el('menu').hidden = !el('menu').hidden;
+};
+// every menu entry closes the menu
+el('menu').addEventListener('click', () => {
+  el('menu').hidden = true;
+});
+
 el('scanData').onclick = downloadScan;
 
-el('draw').onclick = () => {
-  if (drawing) {
-    finishDrawing(false);
-  } else {
-    selection = null;
-    drawing = [];
-    render();
-    renderPanel();
-  }
-};
-
-el('sample').onclick = () => {
-  // an L-shaped room as a capture would give it: every corner a few cm off
-  plan = roomFromCorners([
-    { x: 0.04, y: -0.03 },
-    { x: 5.06, y: 0.05 },
-    { x: 4.97, y: 2.24 },
-    { x: 3.03, y: 2.18 },
-    { x: 2.95, y: 4.06 },
-    { x: -0.04, y: 3.96 },
-  ]);
-  selection = null;
-  fit();
-  resolve();
-};
+for (const t of ['wall', 'door', 'window'] as const) {
+  el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);
+}
 
 el('fit').onclick = () => {
   fit();

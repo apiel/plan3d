@@ -80,6 +80,46 @@ describe('solver', () => {
     expect(Math.abs(len(plan, 2) - 4.2)).toBeLessThan(Math.abs(before - 4.2));
   });
 
+  it('stretches unmeasured walls in proportion to a measured one', () => {
+    const plan = noisyRoom();
+    const before = len(plan, 1); // about 3.03 m in the capture
+    const scale = 4.4 / len(plan, 0);
+    setDistance(plan, plan.points[0].id, plan.points[1].id, 4.4);
+    apply(plan, solve(plan));
+    expect(len(plan, 0)).toBeCloseTo(4.4, 2);
+    // the scan was short by the same factor everywhere
+    expect(len(plan, 1)).toBeCloseTo(before * scale, 1);
+    expect(len(plan, 2)).toBeCloseTo(4.4, 1);
+  });
+
+  it('keeps a measured wall when another one is measured, and shares the rest', () => {
+    const plan = noisyRoom();
+    const [p0, p1, p2] = plan.points.map((p) => p.id);
+    setDistance(plan, p0, p1, 4.4);
+    apply(plan, solve(plan));
+    setDistance(plan, p1, p2, 3.0);
+    const result = solve(plan);
+    apply(plan, result);
+    expect(result.conflicts).toHaveLength(0);
+    expect(len(plan, 0)).toBeCloseTo(4.4, 2);
+    expect(len(plan, 1)).toBeCloseTo(3.0, 2);
+    // the unmeasured opposite walls follow the measured ones
+    expect(len(plan, 2)).toBeGreaterThan(4.2);
+    expect(len(plan, 3)).toBeLessThan(3.15);
+  });
+
+  it('a second solve does not move anything', () => {
+    const plan = noisyRoom();
+    setDistance(plan, plan.points[0].id, plan.points[1].id, 4.4);
+    apply(plan, solve(plan));
+    const once = plan.points.map((p) => ({ x: p.x, y: p.y }));
+    apply(plan, solve(plan));
+    plan.points.forEach((p, i) => {
+      expect(p.x).toBeCloseTo(once[i].x, 3);
+      expect(p.y).toBeCloseTo(once[i].y, 3);
+    });
+  });
+
   it('reports contradictory measurements', () => {
     const plan = noisyRoom();
     setDistance(plan, plan.points[0].id, plan.points[1].id, 4.0);

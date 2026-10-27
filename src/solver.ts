@@ -1,11 +1,15 @@
 // Least-squares adjustment of a plan.
 //
-// Every fact is a residual with a standard deviation: the capture's point
-// positions (loose), measured distances (tight), right angles (tight). We
-// find the point positions minimising the weighted sum of squared residuals
-// with Levenberg-Marquardt. The more tight facts are added, the more the
-// result is pinned down, and unmeasured walls get pulled into line through
-// the shared corners and right angles.
+// Every fact is a residual with a standard deviation: the capture's shape
+// (loose), measured distances (tight), right angles (tight). We find the
+// point positions minimising the weighted sum of squared residuals with
+// Levenberg-Marquardt. The more tight facts are added, the more the result
+// is pinned down.
+//
+// The capture's shape is kept as each wall's vector (direction and length)
+// times an unknown scale per room: a scan that is 10% short is 10% short
+// everywhere, so measuring one wall stretches the walls that are not
+// measured in proportion. Each room's centre stays where the capture put it.
 
 import { Constraint, Plan, Vec, dist } from './model';
 
@@ -14,10 +18,14 @@ export const SIGMA = {
   sensor: 0.05,
   distance: 0.003,
   angle: 0.01,
+  /** The scale of a room's capture: loose, measurements decide it. */
+  scale: 1,
 };
 
 export interface SolveResult {
   points: Map<string, Vec>;
+  /** Capture positions rescaled by the scale found for their room, so the next solve starts from scale 1. */
+  sensors: Map<string, Vec>;
   iterations: number;
   /** Measured distances the solution could not honour, with the error in metres. */
   conflicts: { constraint: Constraint; error: number }[];
@@ -27,12 +35,19 @@ const EPS = 1e-9;
 
 export function solve(plan: Plan, maxIterations = 100): SolveResult {
   const index = new Map(plan.points.map((p, i) => [p.id, i]));
-  const n = plan.points.length * 2;
+  const rooms = roomsOf(plan, index);
+  const np = plan.points.length * 2;
+  // unknowns: x, y of every point, then one scale per room
+  const n = np + rooms.length;
   const x = new Float64Array(n);
   plan.points.forEach((p, i) => {
     x[2 * i] = p.x;
     x[2 * i + 1] = p.y;
   });
+  x.fill(1, np);
+  const centre = rooms.map((members) => mean(members.map((i) => plan.points[i].sensor)));
+  const roomOf = new Int32Array(plan.points.length);
+  rooms.forEach((members, r) => members.forEach((i) => (roomOf[i] = r)));
 
   const at = (v: Float64Array, id: string): Vec => {
     const i = index.get(id);
@@ -42,10 +57,27 @@ export function solve(plan: Plan, maxIterations = 100): SolveResult {
 
   const residuals = (v: Float64Array): number[] => {
     const r: number[] = [];
-    plan.points.forEach((p, i) => {
-      r.push((v[2 * i] - p.sensor.x) / SIGMA.sensor);
-      r.push((v[2 * i + 1] - p.sensor.y) / SIGMA.sensor);
+    rooms.forEach((members, k) => {
+      let cx = 0;
+      let cy = 0;
+      for (const i of members) {
+        cx += v[2 * i];
+        cy += v[2 * i + 1];
+      }
+      r.push((cx / members.length - centre[k].x) / SIGMA.sensor);
+      r.push((cy / members.length - centre[k].y) / SIGMA.sensor);
+      r.push((v[np + k] - 1) / SIGMA.scale);
     });
+    for (const w of plan.walls) {
+      const a = index.get(w.a);
+      const b = index.get(w.b);
+      if (a === undefined || b === undefined) continue;
+      const s = v[np + roomOf[a]];
+      const pa = plan.points[a].sensor;
+      const pb = plan.points[b].sensor;
+      r.push((v[2 * b] - v[2 * a] - s * (pb.x - pa.x)) / SIGMA.sensor);
+      r.push((v[2 * b + 1] - v[2 * a + 1] - s * (pb.y - pa.y)) / SIGMA.sensor);
+    }
     for (const c of plan.constraints) {
       if (c.type === 'distance') {
         r.push((dist(at(v, c.a), at(v, c.b)) - c.value) / SIGMA.distance);
@@ -124,7 +156,13 @@ export function solve(plan: Plan, maxIterations = 100): SolveResult {
   }
 
   const points = new Map<string, Vec>();
-  plan.points.forEach((p, i) => points.set(p.id, { x: x[2 * i], y: x[2 * i + 1] }));
+  const sensors = new Map<string, Vec>();
+  plan.points.forEach((p, i) => {
+    points.set(p.id, { x: x[2 * i], y: x[2 * i + 1] });
+    const k = roomOf[i];
+    const s = x[np + k];
+    sensors.set(p.id, { x: centre[k].x + (p.sensor.x - centre[k].x) * s, y: centre[k].y + (p.sensor.y - centre[k].y) * s });
+  });
 
   const conflicts: SolveResult['conflicts'] = [];
   for (const c of plan.constraints) {
@@ -132,7 +170,7 @@ export function solve(plan: Plan, maxIterations = 100): SolveResult {
     const error = dist(points.get(c.a)!, points.get(c.b)!) - c.value;
     if (Math.abs(error) > 0.01) conflicts.push({ constraint: c, error });
   }
-  return { points, iterations, conflicts };
+  return { points, sensors, iterations, conflicts };
 }
 
 /** Applies a solution to the plan in place. */
@@ -143,7 +181,30 @@ export function apply(plan: Plan, result: SolveResult): void {
       p.x = s.x;
       p.y = s.y;
     }
+    const sensor = result.sensors.get(p.id);
+    if (sensor) p.sensor = sensor;
   }
+}
+
+const mean = (pts: Vec[]): Vec => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });
+
+/** Point indices grouped into rooms: points joined by walls belong together. */
+function roomsOf(plan: Plan, index: Map<string, number>): number[][] {
+  const parent = plan.points.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (const w of plan.walls) {
+    const a = index.get(w.a);
+    const b = index.get(w.b);
+    if (a !== undefined && b !== undefined) parent[find(a)] = find(b);
+  }
+  const groups = new Map<number, number[]>();
+  plan.points.forEach((_, i) => {
+    const root = find(i);
+    const g = groups.get(root);
+    if (g) g.push(i);
+    else groups.set(root, [i]);
+  });
+  return [...groups.values()];
 }
 
 /** Solves A x = b by Gaussian elimination with partial pivoting; undefined if singular. */

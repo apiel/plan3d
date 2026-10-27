@@ -9,7 +9,7 @@ Static site, everything runs in the browser (TypeScript + Vite, no backend), so 
 Renovation planning keeps going wrong because measurements are forgotten or the plan is never updated. The workflow this app is aiming for:
 
 1. **Scan** a room with the phone (Android, WebXR depth): turn on the spot and walk around, the app builds the outline by itself. The result is approximate: walls a few cm off. (Drawing by hand in the editor also works, for use at a computer.)
-2. **Tighten** it. Type in the measurements you trust (a wall measured with a tape or laser, a door width) and mark right-angle corners. A least-squares solver finds the corner positions that best satisfy everything: measured values count far more than capture values, and unmeasured walls get pulled into line through shared corners and right angles. The more you enter, the more accurate the plan.
+2. **Tighten** it. Type in the measurements you trust (a wall measured with a tape or laser, a door width) and mark right-angle corners. A least-squares solver finds the corner positions that best satisfy everything: measured values count far more than capture values. The capture is trusted for the room's shape (each wall's direction and relative length), not its size: every room has its own scale, so measuring one wall stretches or shrinks the walls you did not measure in proportion, and further measurements share out the rest. The more you enter, the more accurate the plan.
 3. **Join** rooms through shared doors to build the whole flat.
 4. **Update** after renovation work by recapturing one room.
 5. **Customise** at home: furniture, 2D and 3D views.
@@ -28,7 +28,7 @@ Node 18 is enough (Vite 5, same as plinth3d).
 ### Pages
 
 - **Scan room (phone)** in the editor starts the AR scan straight away (if the phone or browser lacks something, the editor says what is missing). Turn slowly aiming at walls, floor and ceiling, walk around the room, then Finish: the outline is added to the plan and you are back in the editor. A top-down mini map shows what has been seen so far. Optionally, while scanning, put the centre cross on each corner and tap **Corner**; for a door or window tap **Door**/**Window** at one side of it (aim at the wall just beside the frame), then aim at the other side, where a dashed line follows the cross with the width under it, and tap the button again, now labelled "2nd side". Marks are drawn over the camera view. The fourth button cancels a half-placed door or window ("Cancel door"), removes the mark under the cross (it turns red, "Remove"), or otherwise undoes the last mark ("Undo").
-- `index.html` is the plan editor (desktop-friendly). Furniture from scans shows as boxes you can drag or delete. You can also draw a room, click a wall to set its measured length, click a corner to make it a right angle, drag corners, pan and zoom. Plans are kept in `localStorage` and can be exported and imported as JSON.
+- `index.html` is the plan editor, phone first: the plan fills the screen, with one **Scan room** button, three tool icons (add a wall, a door, a window) and a ⋯ menu for the rest (square all corners, fit, export/import, last scan data, clear). Wall tool: tap corners one after the other (tapping an existing corner starts from it or closes the shape; tap the last corner again to stop). Door/window tool: tap a wall, then type the width. Tap a wall or its length to type the measured length, tap a door or window to change its type or width, tap a corner to make it a right angle or delete it; drag corners, pan with one finger, pinch or scroll to zoom. Furniture from scans is left out of the plan for now. Doors are drawn as a leaf with its swing arc, windows as thin lines across the wall. Plans are kept in `localStorage` and can be exported and imported as JSON.
 - `depth.html` is the phone test page for WebXR depth sensing. See below.
 
 ## How the scan works
@@ -73,7 +73,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | File | What |
 | --- | --- |
 | `src/model.ts` | Plan data model (points, walls, constraints) and edit helpers. Metres, y down. |
-| `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian). `SIGMA` sets how much each kind of fact is trusted. |
+| `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian): capture shape per room at a free scale, measured distances, right angles. `SIGMA` sets how much each kind of fact is trusted. |
 | `src/solver.test.ts` | Solver tests (vitest). |
 | `src/main.ts` | Canvas editor and side panel. |
 | `src/scan.ts` | AR scan, started from the editor: collects depth keyframes, crosshair marks drawn over the camera, mini map, adds the room to the plan. |

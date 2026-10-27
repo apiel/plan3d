@@ -2,44 +2,36 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>plan3d</title>
 </head>
 <body>
-<div id="app">
-  <aside id="side">
-    <h1>plan3d</h1>
-    <p class="muted">Rough plan from capture, then tighten it with the measurements you trust.</p>
+<canvas id="canvas"></canvas>
 
-    <section>
-      <div class="row">
-        <button id="scan" class="primary">Scan room (phone)</button>
-        <button id="scanData" hidden>Download last scan data</button>
-      </div>
-      <p id="scanMsg" class="warn" hidden></p>
-      <div class="row">
-        <button id="draw">Draw room</button>
-        <button id="sample">Sample room</button>
-        <button id="fit">Fit</button>
-      </div>
-      <div class="row">
-        <button id="square">Square all corners</button>
-        <button id="clear" class="danger">Clear</button>
-      </div>
-      <div class="row">
-        <button id="export">Export</button>
-        <button id="import">Import</button>
-        <input id="file" type="file" accept="application/json" hidden>
-      </div>
-    </section>
+<div id="empty" hidden>Tap <b>Scan room</b> and walk around the room with your phone.</div>
+<div id="info" class="chip" hidden></div>
 
-    <section id="selection"></section>
-    <section id="status" class="muted"></section>
-
-    <p class="muted"><a href="depth.html">Depth test page</a> (phone, AR)</p>
-  </aside>
-  <canvas id="canvas"></canvas>
+<button id="menuBtn" class="round" aria-label="Menu">⋯</button>
+<div id="tools">
+  <button id="tool-wall" class="round" title="Add a wall" aria-label="Add a wall"><svg viewBox="0 0 24 24"><path d="M5 19 19 5" stroke-width="3.5"/><circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/></svg></button>
+  <button id="tool-door" class="round" title="Add a door" aria-label="Add a door"><svg viewBox="0 0 24 24"><path d="M2 20h4M20 20h2" stroke-width="3"/><path d="M6 20V6" stroke-width="2.2"/><path d="M6 6a14 14 0 0 1 14 14" stroke-dasharray="2 2.2"/></svg></button>
+  <button id="tool-window" class="round" title="Add a window" aria-label="Add a window"><svg viewBox="0 0 24 24"><path d="M1 12h3M20 12h3" stroke-width="3"/><rect x="4" y="9" width="16" height="6"/><path d="M4 12h16"/></svg></button>
 </div>
+<nav id="menu" hidden>
+  <button id="square">Square all corners</button>
+  <button id="fit">Fit to screen</button>
+  <button id="export">Export plan</button>
+  <button id="import">Import plan</button>
+  <button id="scanData" hidden>Download last scan data</button>
+  <button id="clear" class="danger">Clear plan</button>
+  <a href="depth.html">Depth test page</a>
+</nav>
+<input id="file" type="file" accept="application/json" hidden>
+
+<p id="scanMsg" class="chip warn" hidden></p>
+<button id="scan" class="primary fab">Scan room</button>
+
+<section id="sheet" hidden></section>
 
 <div id="scanOverlay">
   <canvas id="arDraw"></canvas>
