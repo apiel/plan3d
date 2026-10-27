@@ -25,8 +25,6 @@ import {
   PlanPoint,
   wallUnderCorner,
   removeWallTie,
-  roomName,
-  setRoomName,
   setAngle,
   toggleRightAngle,
   wallThickness,
@@ -35,7 +33,7 @@ import {
 import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, insideRoom, joinDoors, joinOf, openingFrame, pruneJoins, roomArea, roomComponents, roomIdsOf, roomLoop, roomOutline, setWallThickness, unjoin } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { insideStair, newStair, stairAxes, stairCorners, stairPoint, stairTreads } from './stairs';
 import { load, save } from './storage';
@@ -50,7 +48,8 @@ type Selection =
   | { kind: 'point'; id: string }
   | { kind: 'wall'; a: string; b: string }
   | { kind: 'opening'; id: string }
-  | { kind: 'room'; id: string }
+  /** A room: its corners in order round it. */
+  | { kind: 'room'; loop: string[] }
   | { kind: 'stair'; id: string }
   | null;
 type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | null;
@@ -60,6 +59,8 @@ type Drag =
   /** `grab`: metres from the start of the opening to where it was picked up; `down`: there on screen. */
   | { kind: 'opening'; id: string; grab: number; down: Vec; moved: boolean }
   | { kind: 'pan'; x: number; y: number; moved: boolean }
+  /** The selected room, dragged as a whole from `from` (world). */
+  | { kind: 'room'; id: string; from: Vec; down: Vec; moved: boolean }
   | { kind: 'pinch'; d: number; mid: Vec }
   | null;
 
@@ -138,6 +139,7 @@ function restore(snapshot: string | undefined): void {
 
 function resolve(): void {
   if (plan.points.length) {
+    joinWallEnds(plan);
     lastSolve = solve(plan);
     apply(plan, lastSolve);
     pruneJoins(plan);
@@ -496,7 +498,7 @@ function render(): void {
 
   // the selected room
   if (selection?.kind === 'room') {
-    const loop = roomLoop(plan, roomIdsOf(plan, selection.id));
+    const loop = selectedRoom();
     if (loop) {
       ctx.fillStyle = '#60a5fa22';
       ctx.beginPath();
@@ -526,6 +528,17 @@ function render(): void {
         ctx.closePath();
       }
       ctx.fill('evenodd');
+      // walls inside the group, between its rooms: a strip each
+      const loop = groupLoop(plan, set)!;
+      for (const w of plan.walls) {
+        if (!set.has(w.a) || loop.some((id, i) => sameWall(w, id, loop[(i + 1) % loop.length]))) continue;
+        const quad = wallBand(w, set);
+        if (!quad) continue;
+        ctx.beginPath();
+        quad.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+        ctx.closePath();
+        ctx.fill();
+      }
       continue;
     }
     // not a simple loop: a plain strip along each wall, on the side away from the room
@@ -555,7 +568,7 @@ function render(): void {
     const b = pointById(plan, wall.b);
     if (!a || !b) continue;
     const measured = findDistance(plan, wall.a, wall.b) !== undefined;
-    const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || (selection?.kind === 'room' && roomIdsOf(plan, selection.id).has(wall.a));
+    const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || (selection?.kind === 'room' && !!selectedRoom() && loopWalls(plan, selectedRoom()!).includes(wall));
     const tie = isTied(wall.a, wall.b);
     ctx.lineWidth = selected || tie ? 5 : measured ? 4 : 3;
     ctx.strokeStyle = selected ? '#60a5fa' : tie ? '#c084fc' : measured ? '#4ade80' : next.has(wallKey(wall.a, wall.b)) ? '#fbbf24' : '#9aa3b0';
@@ -572,7 +585,7 @@ function render(): void {
   // wall lengths, over the openings, and remembered for tapping
   labelBoxes = [];
   dimBoxes = [];
-  const rooms = roomComponents(plan).map((ids) => new Set(ids));
+  const groups = roomComponents(plan).map((ids) => new Set(ids));
   for (const wall of plan.walls) {
     const a = pointById(plan, wall.a);
     const b = pointById(plan, wall.b);
@@ -589,7 +602,7 @@ function render(): void {
     let at = { x: (toScreen(a).x + toScreen(b).x) / 2 + n.x * away, y: (toScreen(a).y + toScreen(b).y) / 2 + n.y * away };
     // a wall shared with a neighbouring room: outside is the neighbour's floor, so the label goes on this room's side
     const atWorld = toWorld(at.x, at.y);
-    if (rooms.some((ids) => !ids.has(wall.a) && insideRoom(plan, ids, atWorld))) {
+    if (groups.some((ids) => !ids.has(wall.a) && insideRoom(plan, ids, atWorld))) {
       const back = away - wallThickness(plan, wall.a, wall.b) * view.scale;
       at = { x: (toScreen(a).x + toScreen(b).x) / 2 - n.x * back, y: (toScreen(a).y + toScreen(b).y) / 2 - n.y * back };
     }
@@ -597,14 +610,10 @@ function render(): void {
     labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
-  // room names, in the middle of the room
-  for (const ids of rooms) {
-    const name = roomName(plan, ids);
-    const loop = name && roomLoop(plan, ids);
-    if (!loop) continue;
-    const pts = loop.map((id) => pointById(plan, id)!);
-    const at = toScreen({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });
-    dimBoxes.push({ ...at, ...label(name, at, '#e6e8eb', true) });
+  // room names, where they were put down
+  for (const n of plan.names) {
+    const at = toScreen(n);
+    dimBoxes.push({ ...at, ...label(n.name, at, '#e6e8eb', true) });
   }
 
   // the angle at the selected corner (also while dragging it): a square when it is held at 90 degrees
@@ -1049,17 +1058,20 @@ function renderSheet(): void {
       render();
     };
   } else if (sel?.kind === 'room') {
-    const ids = roomIdsOf(plan, sel.id);
-    if (ids.size < 3) return closeSheet();
-    const area = roomArea(plan, ids);
-    const doors = plan.openings.filter((o) => ids.has(o.a)).length;
+    const loop = selectedRoom();
+    if (!loop) return closeSheet();
+    const walls = loopWalls(plan, loop);
+    const area = loopArea(plan, loop);
+    const doors = plan.openings.filter((o) => o.type !== 'part' && walls.some((w) => sameWall(w, o.a, o.b))).length;
     sheet.innerHTML =
-      head(escapeHtml(roomName(plan, ids) ?? 'Room'), `${area !== null ? `${area.toFixed(1)} m² · ` : ''}${ids.size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
-      `<form id="nameForm" class="row"><label class="num"><span class="muted">Name</span><input id="name" type="text" enterkeyhint="done" autocomplete="off" placeholder="Kitchen, bedroom…" value="${escapeHtml(roomName(plan, ids) ?? '')}"></label><button id="nameOk" class="primary">OK</button></form>` +
-      `<div class="row"><button id="delRoom" class="icon danger" title="Delete this room"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete room</button></div>`;
+      head(escapeHtml(roomName(plan, loop) ?? 'Room'), `${area.toFixed(1)} m² · ${new Set(loop).size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
+      `<form id="nameForm" class="row"><label class="num"><span class="muted">Name</span><input id="name" type="text" enterkeyhint="done" autocomplete="off" placeholder="Kitchen, bedroom…" value="${escapeHtml(roomName(plan, loop) ?? '')}"></label><button id="nameOk" class="primary">OK</button></form>` +
+      `<div class="row">` +
+      `<button id="dupRoom" class="icon" title="Make a copy of this room beside it"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Duplicate</button>` +
+      `<button id="delRoom" class="icon danger" title="Delete this room"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete room</button></div>`;
     el('nameForm').onsubmit = (e) => {
       e.preventDefault();
-      setRoomName(plan, ids, el<HTMLInputElement>('name').value.trim());
+      setRoomName(plan, loop, el<HTMLInputElement>('name').value.trim());
       el<HTMLInputElement>('name').blur();
       sheet.dataset.key = '';
       commit();
@@ -1068,9 +1080,15 @@ function renderSheet(): void {
     };
     el('nameOk').onmousedown = (e) => e.preventDefault();
     el('nameOk').onpointerdown = (e) => e.preventDefault();
+    el('dupRoom').onclick = () => {
+      selection = { kind: 'room', loop: duplicateRoom(plan, loop) };
+      sheet.dataset.key = '';
+      resolve();
+      showScanMsg('Copy made beside the room. Drag inside it to move it.');
+    };
     el('delRoom').onclick = () => {
-      if (!confirm('Delete this whole room, with its walls, doors and windows?')) return;
-      deleteRoom(plan, sel.id);
+      if (!confirm('Delete this room, with its walls, doors and windows? Walls it shares with another room stay.')) return;
+      deleteRoom(plan, loop);
       closeSheet();
       resolve();
     };
@@ -1298,6 +1316,8 @@ canvas.addEventListener('pointerdown', (e) => {
   } else if (st) {
     selection = { kind: 'stair', id: st.id };
     drag = { kind: 'stair', id: st.id, from: cursor, start: { x: st.x, y: st.y }, moved: false };
+  } else if (selection?.kind === 'room' && insideRoom(plan, roomIdsOf(plan, selection.loop[0]), cursor)) {
+    drag = { kind: 'room', id: selection.loop[0], from: cursor, down: pos, moved: false };
   } else {
     selection = null;
     drag = { kind: 'pan', x: pos.x, y: pos.y, moved: false };
@@ -1357,6 +1377,13 @@ canvas.addEventListener('pointermove', (e) => {
       d.moved = true;
     }
     render();
+  } else if (drag?.kind === 'room') {
+    if (drag.moved || dist(pos, drag.down) > 6) {
+      moveRoom(plan, drag.id, sub(cursor, drag.from));
+      drag.from = cursor;
+      drag.moved = true;
+      render();
+    }
   } else if (drag?.kind === 'pan') {
     if (Math.hypot(pos.x - drag.x, pos.y - drag.y) > 3) drag.moved = true;
     view.ox += pos.x - drag.x;
@@ -1378,6 +1405,13 @@ const pointerEnd = (e: PointerEvent) => {
   }
   const moved = drag?.kind === 'point' && drag.moved;
   if (drag?.kind === 'stair' && drag.moved) commit();
+  if (drag?.kind === 'room') {
+    const moved = drag.moved;
+    drag = null;
+    showScanMsg(null);
+    if (moved) resolve();
+    return;
+  }
   if (drag?.kind === 'opening' && drag.moved) {
     drag = null;
     resolve(); // a joined door moved: its rooms follow
@@ -1400,12 +1434,19 @@ function stairTap(pos: Vec): void {
   renderUi();
 }
 
+/** The selected room as it is now (walls may have moved or changed since it was tapped). */
+function selectedRoom(): string[] | undefined {
+  if (selection?.kind !== 'room') return undefined;
+  const key = [...selection.loop].sort().join();
+  return rooms(plan).find((loop) => [...loop].sort().join() === key);
+}
+
 /** A tap on empty floor inside a room selects the room. */
 function tapRoom(pos: Vec): void {
   const p = toWorld(pos.x, pos.y);
-  const room = roomComponents(plan).find((ids) => ids.length >= 3 && insideRoom(plan, new Set(ids), p));
+  const room = roomAt(plan, p);
   if (!room) return;
-  selection = { kind: 'room', id: room[0] };
+  selection = { kind: 'room', loop: room };
   render();
   renderUi();
 }

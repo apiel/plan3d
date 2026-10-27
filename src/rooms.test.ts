@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_THICKNESS, Plan, Vec, newId, roomFromCorners, setDistance } from './model';
+import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, insideRoom, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -157,10 +157,81 @@ describe('rooms', () => {
     const da = door(plan, a, 1, 1);
     const db = door(plan, b, 3, 1);
     joinDoors(plan, da, db);
-    deleteRoom(plan, b[0]);
+    deleteRoom(plan, rooms(plan).find((loop) => loop.includes(b[0]))!);
     expect(plan.points.length).toBe(4);
     expect(plan.walls.length).toBe(4);
     expect(plan.openings.map((o) => o.id)).toEqual([da]);
     expect(plan.joins).toEqual([]);
+  });
+});
+
+describe('duplicating a room', () => {
+  it('copies corners, walls, measurements and doors beside the original', () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    const [p0, p1, p2] = plan.points;
+    setDistance(plan, p0.id, p1.id, 4);
+    plan.constraints.push({ type: 'rightAngle', a: p0.id, b: p1.id, c: p2.id });
+    plan.openings.push({ id: newId(), type: 'door', a: p0.id, b: p1.id, at: 1, width: 0.8, color: '#f87171' });
+    const copy = duplicateRoom(plan, rooms(plan)[0]);
+    expect(roomComponents(plan)).toHaveLength(2);
+    const ids = roomIdsOf(plan, copy[0]);
+    expect(ids.has(p0.id)).toBe(false);
+    expect(plan.points.filter((p) => ids.has(p.id)).map((p) => p.x)).toEqual([4.5, 8.5, 8.5, 4.5]);
+    expect(plan.walls).toHaveLength(8);
+    expect(plan.constraints.filter((c) => ids.has(c.a))).toHaveLength(2);
+    const door = plan.openings.find((o) => ids.has(o.a))!;
+    expect(door).toMatchObject({ type: 'door', at: 1, width: 0.8, color: '#f87171' });
+    expect(ids.has(door.b)).toBe(true);
+  });
+});
+
+describe('a wall across a room', () => {
+  const split = () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 3 }, { x: 0, y: 3 }]);
+    const [p0, , , p3] = plan.points;
+    setDistance(plan, p3.id, p0.id, 3);
+    plan.openings.push({ id: newId(), type: 'door', a: p3.id, b: p0.id, at: 2.2, width: 0.6 });
+    const l = addPoint(plan, { x: 0.01, y: 1.5 });
+    const r = addPoint(plan, { x: 2, y: 1.5 });
+    plan.walls.push({ a: l.id, b: r.id });
+    joinWallEnds(plan);
+    return { plan, p0, p3, l, r };
+  };
+
+  it('is joined to the walls it ends on, which makes two rooms', () => {
+    const { plan, l } = split();
+    expect(l.x).toBeCloseTo(0);
+    expect(plan.walls).toHaveLength(7);
+    expect(roomComponents(plan)).toHaveLength(1);
+    expect(rooms(plan).map((loop) => loopArea(plan, loop)).sort()).toEqual([3, 3]);
+    expect(roomAt(plan, { x: 1, y: 0.5 })).not.toEqual(roomAt(plan, { x: 1, y: 2.5 }));
+  });
+
+  it('keeps doors where they were, and the measurement over the whole wall', () => {
+    const { plan, p0, p3, l } = split();
+    // the door was 2.2 m from the bottom corner going up: 0.7 m from the new corner, on the top half
+    const d = plan.openings[0];
+    expect([d.a, d.b].sort()).toEqual([l.id, p0.id].sort());
+    expect(openingFrame(plan, d)!.p1.y).toBeCloseTo(0.8);
+    expect(plan.constraints).toContainEqual({ type: 'distance', a: p3.id, b: p0.id, value: 3 });
+    const s = solve(plan);
+    apply(plan, s);
+    expect(l.x).toBeCloseTo(0, 3); // held in line
+  });
+
+  it('gives each room its own name, and they move with the rooms', () => {
+    const { plan } = split();
+    setRoomName(plan, roomAt(plan, { x: 1, y: 0.5 })!, 'Bathroom');
+    setRoomName(plan, roomAt(plan, { x: 1, y: 2.5 })!, 'Toilet');
+    expect(roomName(plan, roomAt(plan, { x: 1, y: 0.5 })!)).toBe('Bathroom');
+    moveRoom(plan, plan.points[0].id, { x: 5, y: 0 });
+    expect(roomName(plan, roomAt(plan, { x: 6, y: 2.5 })!)).toBe('Toilet');
+  });
+
+  it('deleting one of the rooms keeps the wall it shares with the other', () => {
+    const { plan } = split();
+    deleteRoom(plan, roomAt(plan, { x: 1, y: 0.5 })!);
+    expect(rooms(plan)).toHaveLength(1);
+    expect(loopArea(plan, rooms(plan)[0])).toBeCloseTo(3);
   });
 });

@@ -10,8 +10,11 @@ export interface PlanPoint extends Vec {
   /** Where the capture (depth/AR/hand-drawn) put this point. The solver pulls
    *  towards it weakly, so manual measurements win when they disagree. */
   sensor: Vec;
-  /** The name of the room this corner belongs to, see `roomName`. */
-  room?: string;
+}
+
+/** A room's name, put down at a spot inside the room. */
+export interface RoomName extends Vec {
+  name: string;
 }
 
 export interface Wall {
@@ -99,9 +102,10 @@ export interface Plan {
   openings: Opening[];
   joins: Join[];
   stairs: Stair[];
+  names: RoomName[];
 }
 
-export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [] });
+export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] });
 
 export const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -173,17 +177,24 @@ export function cornerNeighbours(plan: Plan, id: string): [string, string] | und
     else if (w.b === id) others.push(w.a);
   }
   if (others.length === 2) return [others[0], others[1]];
+  if (others.length === 3) {
+    // a wall joined onto another one, split there: the wall that ends here and one half of the other
+    const p = pointById(plan, id);
+    const dir = (o: string) => {
+      const q = pointById(plan, o)!;
+      const l = Math.hypot(q.x - p!.x, q.y - p!.y) || 1;
+      return { x: (q.x - p!.x) / l, y: (q.y - p!.y) / l };
+    };
+    for (let i = 0; i < 3; i++) {
+      const [m, n] = [others[(i + 1) % 3], others[(i + 2) % 3]];
+      if (p && dir(m).x * dir(n).x + dir(m).y * dir(n).y < -0.97) return [others[i], m];
+    }
+    return undefined;
+  }
   const host = others.length === 1 ? wallUnderCorner(plan, id) : undefined;
   return host ? [others[0], host.a] : undefined;
 }
 
-/** A room's name: kept on its corners, so it survives corners coming and going. */
-export const roomName = (plan: Plan, ids: Set<string>): string | undefined =>
-  plan.points.find((p) => ids.has(p.id) && p.room)?.room;
-
-export function setRoomName(plan: Plan, ids: Set<string>, name: string): void {
-  for (const p of plan.points) if (ids.has(p.id)) p.room = name || undefined;
-}
 
 export function findRightAngle(plan: Plan, id: string): boolean {
   return plan.constraints.some((c) => c.type === 'rightAngle' && c.b === id);
@@ -224,6 +235,8 @@ export function wallTies(plan: Plan, a: string, b: string): { type: WallTie; a: 
   const out: { type: WallTie; a: string; b: string }[] = [];
   for (const c of plan.constraints) {
     if (!tieMatches(c, a, b) || (c.type !== 'parallel' && c.type !== 'equal')) continue;
+    if (c.type === 'parallel' && c.b === c.c) continue; // the two halves of a split wall, held in line: not shown
+
     const first = (c.a === a && c.b === b) || (c.a === b && c.b === a);
     out.push({ type: c.type, a: first ? c.c : c.a, b: first ? c.d : c.b });
   }
@@ -280,7 +293,18 @@ export function parse(text: string): Plan {
     openings: Array.isArray(raw.openings) ? raw.openings : [],
     joins: Array.isArray(raw.joins) ? raw.joins : [],
     stairs: Array.isArray(raw.stairs) ? raw.stairs : [],
+    names: Array.isArray(raw.names) ? raw.names : namesFromCorners(raw.points),
   };
+}
+
+/** Plans from before names had a place kept them on the room's corners: the name goes to their middle. */
+function namesFromCorners(points: (PlanPoint & { room?: string })[]): RoomName[] {
+  const byName = new Map<string, PlanPoint[]>();
+  for (const p of points) {
+    if (p.room) byName.set(p.room, [...(byName.get(p.room) ?? []), p]);
+    delete p.room;
+  }
+  return [...byName].map(([name, ps]) => ({ name, x: ps.reduce((s, p) => s + p.x, 0) / ps.length, y: ps.reduce((s, p) => s + p.y, 0) / ps.length }));
 }
 
 /** A closed room from an ordered list of corners (metres). */

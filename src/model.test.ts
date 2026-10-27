@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addPoint, cornerNeighbours, roomFromCorners, roomName, setAngle, setRoomName } from './model';
+import { addPoint, cornerNeighbours, roomFromCorners, setAngle } from './model';
 
 describe('a wall ending on another wall', () => {
   it('gets the wall it stands on as its second neighbour, so it can be held at 90°', () => {
@@ -14,13 +14,3 @@ describe('a wall ending on another wall', () => {
   });
 });
 
-describe('room names', () => {
-  it('are kept on the corners, and survive one of them going away', () => {
-    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
-    const ids = new Set(plan.points.map((p) => p.id));
-    expect(roomName(plan, ids)).toBeUndefined();
-    setRoomName(plan, ids, 'Kitchen');
-    plan.points.shift();
-    expect(roomName(plan, new Set(plan.points.map((p) => p.id)))).toBe('Kitchen');
-  });
-});

@@ -1,8 +1,90 @@
-// Rooms (points joined by walls), the doors that tie rooms together, and deleting a room.
+// Rooms: the areas closed in by walls. Corners joined by walls form a group
+// (moved and scaled together); a group holds one room or several, split by
+// walls inside it. Also the doors that tie groups together.
 
-import { Opening, Plan, Vec, pointById, removePoint, sameWall, wallThickness } from './model';
+import { Constraint, Opening, Plan, Vec, Wall, constraintIds, newId, pointById, removePoint, sameWall, wallThickness, wallUnderCorner } from './model';
 
 const mid = (a: Vec, b: Vec): Vec => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+/**
+ * Every area the walls go round, as its corners in order, with its signed
+ * area: positive for a room, negative for the outside of a group of rooms.
+ * A wall sticking into a room appears twice in it, once each way.
+ */
+function faces(plan: Plan): { loop: string[]; area: number }[] {
+  const at = new Map(plan.points.map((p) => [p.id, p]));
+  const around = new Map<string, string[]>();
+  for (const w of plan.walls) {
+    if (!at.has(w.a) || !at.has(w.b) || w.a === w.b) continue;
+    around.set(w.a, [...(around.get(w.a) ?? []), w.b]);
+    around.set(w.b, [...(around.get(w.b) ?? []), w.a]);
+  }
+  // neighbours of each corner, by direction
+  for (const [id, ns] of around) {
+    const p = at.get(id)!;
+    ns.sort((m, n) => Math.atan2(at.get(m)!.y - p.y, at.get(m)!.x - p.x) - Math.atan2(at.get(n)!.y - p.y, at.get(n)!.x - p.x));
+  }
+  const seen = new Set<string>();
+  const out: { loop: string[]; area: number }[] = [];
+  for (const [start, ns] of around) {
+    for (const first of ns) {
+      if (seen.has(`${start}>${first}`)) continue;
+      // walk keeping the area on the left: at each corner, take the next wall clockwise from the one we came along
+      const loop: string[] = [];
+      let [u, v] = [start, first];
+      while (!seen.has(`${u}>${v}`) && loop.length <= plan.walls.length * 2) {
+        seen.add(`${u}>${v}`);
+        loop.push(u);
+        const nv = around.get(v)!;
+        const w = nv[(nv.indexOf(u) - 1 + nv.length) % nv.length];
+        [u, v] = [v, w];
+      }
+      let area = 0;
+      loop.forEach((id, i) => {
+        const p = at.get(id)!;
+        const q = at.get(loop[(i + 1) % loop.length])!;
+        area += p.x * q.y - q.x * p.y;
+      });
+      out.push({ loop, area: area / 2 });
+    }
+  }
+  return out;
+}
+
+/** The rooms: each area closed in by walls, as its corners in order around it. */
+export function rooms(plan: Plan): string[][] {
+  return faces(plan)
+    .filter((f) => f.area > 1e-6)
+    .map((f) => f.loop);
+}
+
+/** Whether `p` is inside the area a loop of corners goes round. */
+export function insideLoop(plan: Plan, loop: string[], p: Vec): boolean {
+  let inside = false;
+  loop.forEach((id, i) => {
+    const a = pointById(plan, id)!;
+    const b = pointById(plan, loop[(i + 1) % loop.length])!;
+    if (a.y > p.y !== b.y > p.y && p.x < a.x + ((p.y - a.y) * (b.x - a.x)) / (b.y - a.y)) inside = !inside;
+  });
+  return inside;
+}
+
+/** The walls of a room, each once (a wall sticking into it comes up twice in its loop). */
+export function loopWalls(plan: Plan, loop: string[]): Wall[] {
+  const walls = new Set<Wall>();
+  loop.forEach((id, i) => {
+    const w = plan.walls.find((x) => sameWall(x, id, loop[(i + 1) % loop.length]));
+    if (w) walls.add(w);
+  });
+  return [...walls];
+}
+
+/** The smallest room around a spot. */
+export function roomAt(plan: Plan, p: Vec): string[] | undefined {
+  return rooms(plan)
+    .filter((loop) => insideLoop(plan, loop, p))
+    .sort((a, b) => loopArea(plan, a) - loopArea(plan, b))[0];
+}
 
 /** Groups of point ids joined by walls. A corner with no wall yet is a group of its own. */
 export function roomComponents(plan: Plan): string[][] {
@@ -38,8 +120,11 @@ export function roomIdsOf(plan: Plan, id: string): Set<string> {
   return new Set(roomComponents(plan).find((r) => r.includes(id)) ?? [id]);
 }
 
-/** Even-odd test against the walls of one room only, so a neighbouring room does not count. */
+/** Whether `p` is inside one of the rooms of a group of corners (not a neighbouring group's). */
 export function insideRoom(plan: Plan, ids: Set<string>, p: Vec): boolean {
+  const own = rooms(plan).filter((loop) => ids.has(loop[0]));
+  if (own.length) return own.some((loop) => insideLoop(plan, loop, p));
+  // walls that close nothing yet: even-odd against them
   let inside = false;
   for (const w of plan.walls) {
     if (!ids.has(w.a) || !ids.has(w.b)) continue;
@@ -73,12 +158,24 @@ export function roomLoop(plan: Plan, ids: Set<string>): string[] | null {
   return loop.length === ids.size ? loop : null;
 }
 
+/** The corners in order round the outside of a group, also when walls inside it split it into rooms, if that is a simple loop. */
+export function groupLoop(plan: Plan, ids: Set<string>): string[] | null {
+  return (
+    roomLoop(plan, ids) ??
+    faces(plan)
+      .filter((f) => f.area < -1e-6 && ids.has(f.loop[0]))
+      .map((f) => f.loop)
+      .find((l) => new Set(l).size === l.length) ??
+    null
+  );
+}
+
 /**
  * The room's walls as a band: `inner` is the line of corners, `outer` the same
  * corners pushed out by each wall's thickness (mitred), when it is a simple loop.
  */
 export function roomOutline(plan: Plan, ids: Set<string>): { inner: Vec[]; outer: Vec[] } | null {
-  const loop = roomLoop(plan, ids);
+  const loop = groupLoop(plan, ids);
   if (!loop) return null;
   const pts = loop.map((id) => pointById(plan, id)!);
   const n = pts.length;
@@ -108,10 +205,8 @@ export function roomOutline(plan: Plan, ids: Set<string>): { inner: Vec[]; outer
   return { inner: pts.map((p) => ({ x: p.x, y: p.y })), outer };
 }
 
-/** Floor area in m², when the room is a simple loop. */
-export function roomArea(plan: Plan, ids: Set<string>): number | null {
-  const loop = roomLoop(plan, ids);
-  if (!loop) return null;
+/** Floor area of a room in m². */
+export function loopArea(plan: Plan, loop: string[]): number {
   const pts = loop.map((id) => pointById(plan, id)!);
   let sum = 0;
   pts.forEach((p, i) => {
@@ -119,6 +214,91 @@ export function roomArea(plan: Plan, ids: Set<string>): number | null {
     sum += p.x * q.y - q.x * p.y;
   });
   return Math.abs(sum) / 2;
+}
+
+/** Floor area in m², when the group is a simple loop. */
+export function roomArea(plan: Plan, ids: Set<string>): number | null {
+  const loop = roomLoop(plan, ids);
+  return loop ? loopArea(plan, loop) : null;
+}
+
+/**
+ * Splits wall a-b at corner `p` standing on it, so walls meeting there are
+ * joined: the halves keep its thickness, colour, doors and windows, and are
+ * held in line. Measurements and angles over the whole wall still hold.
+ */
+export function splitWall(plan: Plan, wall: Wall, p: string): void {
+  const a = pointById(plan, wall.a)!;
+  const b = pointById(plan, wall.b)!;
+  const at = pointById(plan, p)!;
+  const len1 = Math.hypot(at.x - a.x, at.y - a.y);
+  const len2 = Math.hypot(b.x - at.x, b.y - at.y);
+  plan.walls = plan.walls.filter((w) => w !== wall);
+  plan.walls.push({ ...wall, b: p }, { ...wall, a: p });
+  for (const o of plan.openings) {
+    if (!sameWall(wall, o.a, o.b)) continue;
+    // counted from the wall's own a end; a door counted from the other end keeps its hinge where it was
+    if (o.a !== wall.a) {
+      o.at = len1 + len2 - o.at - o.width;
+      if (o.type === 'door') o.hingeAtB = !o.hingeAtB || undefined;
+    }
+    if (o.at + o.width / 2 <= len1) Object.assign(o, { a: wall.a, b: p, at: Math.max(0, Math.min(o.at, len1 - o.width)) });
+    else Object.assign(o, { a: p, b: wall.b, at: Math.max(0, Math.min(o.at - len1, len2 - o.width)) });
+  }
+  plan.constraints.push({ type: 'parallel', a: wall.a, b: p, c: p, d: wall.b });
+}
+
+/** Joins each loose wall end standing on another wall to it, splitting that wall there. */
+export function joinWallEnds(plan: Plan): void {
+  for (const p of plan.points) {
+    if (plan.walls.filter((w) => w.a === p.id || w.b === p.id).length !== 1) continue;
+    const host = wallUnderCorner(plan, p.id);
+    if (!host) continue;
+    // exactly onto the wall, then joined
+    const a = pointById(plan, host.a)!;
+    const b = pointById(plan, host.b)!;
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+    const t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+    p.x = a.x + t * (b.x - a.x);
+    p.y = a.y + t * (b.y - a.y);
+    p.sensor = { x: p.x, y: p.y };
+    splitWall(plan, host, p.id);
+  }
+}
+
+/** A room's name: the name put down inside it. */
+export const roomName = (plan: Plan, loop: string[]): string | undefined => plan.names.find((n) => insideLoop(plan, loop, n))?.name;
+
+/** Names a room (an empty name removes it); the name goes in the middle of the room. */
+export function setRoomName(plan: Plan, loop: string[], name: string): void {
+  plan.names = plan.names.filter((n) => !insideLoop(plan, loop, n));
+  if (name) plan.names.push({ ...spotInside(plan, loop), name });
+}
+
+/** A spot well inside a room: its centre, or for a room bent round (an L), the spot furthest from its walls. */
+export function spotInside(plan: Plan, loop: string[]): Vec {
+  const pts = loop.map((id) => pointById(plan, id)!);
+  const centre = { x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length };
+  if (insideLoop(plan, loop, centre)) return centre;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  let best = centre;
+  let bestD = -1;
+  for (let i = 1; i < 24; i++) {
+    for (let j = 1; j < 24; j++) {
+      const s = { x: Math.min(...xs) + ((Math.max(...xs) - Math.min(...xs)) * i) / 24, y: Math.min(...ys) + ((Math.max(...ys) - Math.min(...ys)) * j) / 24 };
+      if (!insideLoop(plan, loop, s)) continue;
+      const d = Math.min(...pts.map((p, k) => segmentDist(s, p, pts[(k + 1) % pts.length])));
+      if (d > bestD) [best, bestD] = [s, d];
+    }
+  }
+  return best;
+}
+
+function segmentDist(p: Vec, a: Vec, b: Vec): number {
+  const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2));
+  return Math.hypot(p.x - a.x - t * (b.x - a.x), p.y - a.y - t * (b.y - a.y));
 }
 
 /** Where a door or window sits: its two ends, the wall direction and the normal pointing into its own room. */
@@ -150,9 +330,59 @@ export function setWallThickness(plan: Plan, a: string, b: string, thickness: nu
   }
 }
 
-/** Removes a whole room: its corners, walls, measurements, doors and windows. */
-export function deleteRoom(plan: Plan, id: string): void {
-  for (const pid of roomIdsOf(plan, id)) removePoint(plan, pid);
+/** Moves a group of rooms (its corners, where the capture put them, and room names) by `d` metres. */
+export function moveRoom(plan: Plan, id: string, d: Vec): void {
+  const ids = roomIdsOf(plan, id);
+  const own = rooms(plan).filter((loop) => ids.has(loop[0]));
+  for (const n of plan.names) {
+    if (!own.some((loop) => insideLoop(plan, loop, n))) continue;
+    n.x += d.x;
+    n.y += d.y;
+  }
+  for (const p of plan.points) {
+    if (!ids.has(p.id)) continue;
+    p.x += d.x;
+    p.y += d.y;
+    p.sensor = { x: p.sensor.x + d.x, y: p.sensor.y + d.y };
+  }
+}
+
+/**
+ * Copies a room with its walls, measurements, angles, doors, windows and
+ * name, beside the original (to the right, with a gap). Joins to other rooms
+ * are not copied. Returns the copy's loop of corners.
+ */
+export function duplicateRoom(plan: Plan, loop: string[]): string[] {
+  const ids = new Set(loop);
+  const pts = plan.points.filter((p) => ids.has(p.id));
+  const shift = Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)) + 0.5;
+  const map = new Map(pts.map((p) => [p.id, newId()]));
+  const to = (x: string) => map.get(x)!;
+  const walls = loopWalls(plan, loop);
+  for (const n of plan.names.filter((n) => insideLoop(plan, loop, n))) plan.names.push({ ...n, x: n.x + shift });
+  for (const p of pts) plan.points.push({ ...p, id: to(p.id), x: p.x + shift, sensor: { x: p.sensor.x + shift, y: p.sensor.y } });
+  for (const w of walls) plan.walls.push({ ...w, a: to(w.a), b: to(w.b) });
+  for (const c of plan.constraints.filter((c) => constraintIds(c).every((x) => ids.has(x)))) {
+    const copy = { ...c } as Constraint & Record<string, unknown>;
+    for (const k of ['a', 'b', 'c', 'd'] as const) if (k in c) copy[k] = to((c as Record<string, unknown>)[k] as string);
+    plan.constraints.push(copy);
+  }
+  for (const o of plan.openings.filter((o) => walls.some((w) => sameWall(w, o.a, o.b)))) plan.openings.push({ ...o, id: newId(), a: to(o.a), b: to(o.b) });
+  return loop.map(to);
+}
+
+/**
+ * Removes a room: its walls with their doors, windows and measurements, but
+ * not walls it shares with a neighbouring room; then corners left with no wall.
+ */
+export function deleteRoom(plan: Plan, loop: string[]): void {
+  const shared = new Set(rooms(plan).filter((l) => l.join() !== loop.join()).flatMap((l) => loopWalls(plan, l)));
+  const gone = loopWalls(plan, loop).filter((w) => !shared.has(w));
+  plan.names = plan.names.filter((n) => !insideLoop(plan, loop, n));
+  plan.walls = plan.walls.filter((w) => !gone.includes(w));
+  plan.openings = plan.openings.filter((o) => !gone.some((w) => sameWall(w, o.a, o.b)));
+  plan.constraints = plan.constraints.filter((c) => !(c.type === 'distance' && gone.some((w) => sameWall(w, c.a, c.b))));
+  for (const id of loop) if (!plan.walls.some((w) => w.a === id || w.b === id)) removePoint(plan, id);
   pruneJoins(plan);
 }
 
