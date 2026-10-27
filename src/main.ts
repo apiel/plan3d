@@ -4,6 +4,7 @@ import {
   Plan,
   Stair,
   Vec,
+  Wall,
   addPoint,
   clearDistance,
   cornerNeighbours,
@@ -14,6 +15,7 @@ import {
   findRightAngle,
   parse,
   pointById,
+  sameWall,
   removePoint,
   serialize,
   setDistance,
@@ -42,7 +44,7 @@ const POINT_HIT = 12; // px, with a mouse
 const WALL_HIT = 8; // px, with a mouse
 const TOUCH_HIT = 2.2; // fingers are less precise: hit areas grow by this much
 const MIN_OPENING_PX = 5; // an opening is at least this deep on screen, even through a thin wall
-const NEW_WIDTH = { door: 0.8, window: 1.0 }; // metres, for doors and windows added by hand
+const NEW_WIDTH = { door: 0.8, window: 1.0, part: 1.0 }; // metres, for doors, windows and wall parts added by hand
 
 type Selection =
   | { kind: 'point'; id: string }
@@ -51,10 +53,12 @@ type Selection =
   | { kind: 'room'; id: string }
   | { kind: 'stair'; id: string }
   | null;
-type Tool = 'wall' | 'door' | 'window' | 'stair' | null;
+type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
   | { kind: 'stair'; id: string; from: Vec; start: Vec; moved: boolean }
+  /** `grab`: metres from the start of the opening to where it was picked up; `down`: there on screen. */
+  | { kind: 'opening'; id: string; grab: number; down: Vec; moved: boolean }
   | { kind: 'pan'; x: number; y: number; moved: boolean }
   | { kind: 'pinch'; d: number; mid: Vec }
   | null;
@@ -211,6 +215,31 @@ function wallUnder(p: Vec, tol: number, skip?: string): { a: Vec; b: Vec; at: Ve
   return best;
 }
 
+/** How far along wall a-b, from `a`, the spot `p` is (metres; outside the wall gives below 0 or past its length). */
+function alongWall(a: string, b: string, p: Vec): number {
+  const pa = pointById(plan, a)!;
+  const pb = pointById(plan, b)!;
+  const u = unit(sub(pb, pa));
+  return (p.x - pa.x) * u.x + (p.y - pa.y) * u.y;
+}
+
+/** The wall nearest to a spot on screen, within `max` pixels (wall lines only, not their length labels). */
+function nearestWall(s: Vec, max: number): Wall | undefined {
+  let best: Wall | undefined;
+  let bestD = max;
+  for (const w of plan.walls) {
+    const a = pointById(plan, w.a);
+    const b = pointById(plan, w.b);
+    if (!a || !b) continue;
+    const d = segDist(s.x, s.y, toScreen(a), toScreen(b));
+    if (d <= bestD) {
+      best = w;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
 function hitOpening(sx: number, sy: number, tol: number): string | undefined {
   for (const o of plan.openings) {
     const g = openingGeometry(o);
@@ -230,6 +259,39 @@ function resizeCanvas(): void {
   canvas.width = Math.round(canvas.clientWidth * dpr);
   canvas.height = Math.round(canvas.clientHeight * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+/** Colours of renovation works: walls, doors and windows to build, or to remove. */
+/** Colours offered for walls, doors, windows and wall parts; any other can be picked too. */
+const COLORS = ['#f87171', '#fb923c', '#facc15', '#4ade80', '#38bdf8', '#a78bfa'];
+/** A new wall part starts in this one. */
+const PART_COLOR = COLORS[0];
+
+/** The band of a wall on screen: from its line, outwards (away from the room) by its thickness. */
+function wallBand(w: Wall, room: Set<string>): Vec[] | undefined {
+  const a = pointById(plan, w.a);
+  const b = pointById(plan, w.b);
+  if (!a || !b) return undefined;
+  const u = unit(sub(b, a));
+  const t = wallThickness(plan, w.a, w.b);
+  let n = { x: -u.y, y: u.x };
+  if (insideRoom(plan, room, { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
+  return [a, b, { x: b.x + n.x * t, y: b.y + n.y * t }, { x: a.x + n.x * t, y: a.y + n.y * t }].map(toScreen);
+}
+
+/** Fills a band on screen in a picked colour, see-through, with an outline. */
+function paintBand(quad: Vec[], color: string): void {
+  ctx.beginPath();
+  quad.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+  ctx.closePath();
+  ctx.fillStyle = '#14161a';
+  ctx.fill();
+  ctx.fillStyle = `${color}99`;
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([]);
+  ctx.stroke();
 }
 
 /** Draws a text label with a dark backing and returns its size. */
@@ -284,11 +346,22 @@ function drawOpening(o: Opening): void {
   const s1 = toScreen(g.p1);
   const s2 = toScreen(g.p2);
   const selected = (selection?.kind === 'opening' && selection.id === o.id) || joinFrom === o.id;
-  const color = selected ? '#60a5fa' : joinOf(plan, o.id) ? '#c084fc' : '#e6e8eb';
+  const color = selected ? '#60a5fa' : joinOf(plan, o.id) ? '#c084fc' : o.color ?? '#e6e8eb';
   const n = g.n; // screen and plan axes point the same way, so world directions work on screen
   // the opening goes through the wall: from its face inside the room, outwards by the wall thickness
   const depth = Math.max(wallThickness(plan, o.a, o.b) * view.scale, MIN_OPENING_PX);
   const out = (p: Vec, k: number): Vec => ({ x: p.x - n.x * k, y: p.y - n.y * k });
+
+  // a part of the wall: no cut, its stretch of band in its colour
+  if (o.type === 'part') {
+    paintBand([s1, s2, out(s2, depth), out(s1, depth)], o.color ?? PART_COLOR);
+    if (selected) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(Math.min(s1.x, s2.x, out(s1, depth).x), Math.min(s1.y, s2.y, out(s1, depth).y), Math.abs(s2.x - s1.x) + Math.abs(n.x) * depth, Math.abs(s2.y - s1.y) + Math.abs(n.y) * depth);
+    }
+    return;
+  }
 
   // cut the wall and its band
   ctx.fillStyle = '#14161a';
@@ -310,6 +383,7 @@ function drawOpening(o: Opening): void {
     for (const k of [0, depth / 2, depth]) line(out(s1, k), out(s2, k));
     return;
   }
+  if (o.noLeaf) return; // only the frame
   // door: leaf hinged at one end, open into the room (or out of it), and its swing
   const hingeAt = o.hingeAtB ? s2 : s1;
   const hinge = o.outward ? out(hingeAt, depth) : hingeAt;
@@ -456,19 +530,18 @@ function render(): void {
     }
     // not a simple loop: a plain strip along each wall, on the side away from the room
     for (const w of plan.walls) {
-      const a = pointById(plan, w.a);
-      const b = pointById(plan, w.b);
-      if (!a || !b || !set.has(w.a)) continue;
-      const u = unit(sub(b, a));
-      const t = wallThickness(plan, w.a, w.b);
-      let n = { x: -u.y, y: u.x };
-      if (insideRoom(plan, set, { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
-      const quad = [a, b, { x: b.x + n.x * t, y: b.y + n.y * t }, { x: a.x + n.x * t, y: a.y + n.y * t }].map(toScreen);
+      const quad = set.has(w.a) && wallBand(w, set);
+      if (!quad) continue;
       ctx.beginPath();
       quad.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
       ctx.closePath();
       ctx.fill();
     }
+  }
+  // walls given a colour: their band in it
+  for (const w of plan.walls) {
+    const quad = w.color && wallBand(w, roomIdsOf(plan, w.a));
+    if (quad) paintBand(quad, w.color!);
   }
 
   const next = nextToMeasure();
@@ -636,7 +709,7 @@ function crowded(at: Vec, w: number, h: number): boolean {
     const g = openingGeometry(o);
     if (!g) continue;
     // the opening and, for a door, the square its leaf swings through, on either side of the wall
-    const r = o.type === 'door' ? o.width : wallThickness(plan, o.a, o.b);
+    const r = o.type === 'door' && !o.noLeaf ? o.width : wallThickness(plan, o.a, o.b);
     const corners = [g.p1, g.p2].flatMap((p) => [-1, 1].map((k) => toScreen({ x: p.x + g.n.x * r * k, y: p.y + g.n.y * r * k })));
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
@@ -720,6 +793,25 @@ const unit = (v: Vec): Vec => {
 
 const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
+/** Colour swatches, a picker for any other colour, and (unless `none` is false) no colour at all. */
+function colorRow(current: string | undefined, onSet: (c: string | undefined) => void, none = true): string {
+  queueMicrotask(() => {
+    document.querySelectorAll<HTMLButtonElement>('#sheet .swatch').forEach((b) => (b.onclick = () => onSet(b.dataset.color || undefined)));
+    const pick = document.getElementById('colorPick') as HTMLInputElement | null;
+    if (pick) pick.onchange = () => onSet(pick.value);
+  });
+  const custom = current && !COLORS.includes(current) ? current : undefined;
+  const swatch = (c: string | undefined, title: string) =>
+    `<button class="swatch ${current === c ? 'on' : ''}" data-color="${c ?? ''}" title="${title}" aria-label="${title}" aria-pressed="${current === c}" style="--swatch:${c ?? 'transparent'}"></button>`;
+  return (
+    `<div class="row colors">` +
+    (none ? swatch(undefined, 'No colour') : '') +
+    COLORS.map((c) => swatch(c, c)).join('') +
+    `<label class="swatch pick ${custom ? 'on' : ''}" title="Any other colour" style="--swatch:${custom ?? 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)'}"><input id="colorPick" type="color" value="${current ?? COLORS[0]}"></label>` +
+    `</div>`
+  );
+}
+
 const head = (title: string, detail = '') =>
   `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
 
@@ -763,7 +855,7 @@ function renderUi(): void {
   }
   el('empty').hidden = plan.points.length > 0 || tool !== null;
   el('scan').hidden = !sheet.hidden || tool !== null;
-  for (const t of ['wall', 'door', 'window', 'stair'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
+  for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
 
   // one line at the top: what the tool expects, or measurements that disagree
   const conflicts = (lastSolve?.conflicts ?? []).filter((c) => c.constraint.type === 'distance');
@@ -777,7 +869,9 @@ function renderUi(): void {
       : tool === 'stair'
         ? 'Tap where the stairs go. Drag them afterwards to move them.'
         : tool
-        ? `Tap the wall where the ${tool} goes.`
+        ? tool === 'part'
+          ? 'Tap the wall where a part of it is to be removed or built.'
+          : `Tap the wall where the ${tool} goes.`
         : conflicts.length
           ? `Measurements disagree: ${conflicts
               .map((c) => (c.constraint.type === 'distance' ? `${(c.constraint.value * 100).toFixed(0)} cm wall is ${(c.error * 100).toFixed(1)} cm off` : ''))
@@ -811,6 +905,14 @@ function renderSheet(): void {
         closeSheet();
         resolve();
       }, { id: 'thick', label: 'Thickness', focus: false }) +
+      colorRow(plan.walls.find((w) => sameWall(w, sel.a, sel.b))?.color, (c) => {
+        const wall = plan.walls.find((w) => sameWall(w, sel.a, sel.b));
+        if (wall) wall.color = c;
+        commit();
+        sheet.dataset.key = '';
+        render();
+        renderUi();
+      }) +
       `<div class="row">` +
       `<button id="tieParallel" class="icon" title="Make another wall parallel to this one"><svg viewBox="0 0 24 24"><path d="M7 4 4 20M20 4l-3 16"/></svg>Parallel to…</button>` +
       `<button id="tieEqual" class="icon" title="Give another wall the same length"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16"/></svg>Same length…</button>` +
@@ -851,7 +953,7 @@ function renderSheet(): void {
     const o = plan.openings.find((x) => x.id === sel.id);
     if (!o) return closeSheet();
     sheet.innerHTML =
-      head(o.type === 'door' ? 'Door' : 'Window', o.measured ? '<span class="ok">width measured</span>' : `width estimated ${(o.width * 100).toFixed(0)} cm`) +
+      head(o.type === 'door' ? 'Door' : o.type === 'window' ? 'Window' : 'Part of the wall', o.measured ? '<span class="ok">width measured</span>' : `width estimated ${(o.width * 100).toFixed(0)} cm`) +
       numberRow(o.width, o.width * 100, (m) => {
         // keep it centred where it was
         o.at = Math.max(0, o.at + (o.width - m) / 2);
@@ -861,8 +963,18 @@ function renderSheet(): void {
         closeSheet();
         render();
       }) +
+      colorRow(o.type === 'part' ? o.color ?? PART_COLOR : o.color, (c) => {
+        o.color = c;
+        commit();
+        sheet.dataset.key = '';
+        render();
+        renderUi();
+      }, o.type !== 'part') +
       `<div class="row">` +
       (o.type === 'door'
+        ? `<button id="noLeaf" class="icon ${o.noLeaf ? 'on' : ''}" title="${o.noLeaf ? 'Hang a door in the frame' : 'Only the frame, no door'}" aria-pressed="${!!o.noLeaf}"><svg viewBox="0 0 24 24"><path d="M2 20h4M18 20h4" stroke-width="3"/><path d="M6 20V6h12v14"/></svg>No door</button>`
+        : '') +
+      (o.type === 'door' && !o.noLeaf
         ? `<button id="flipHinge" class="icon" title="Hinge on the other side"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 20V8"/><path d="M5 8a12 12 0 0 1 12 12" stroke-dasharray="2 2.2"/><path d="M13 4h8m-2-2 2 2-2 2M21 9h-8m2-2-2 2 2 2"/></svg>Hinge side</button>` +
           `<button id="flipSwing" class="icon" title="Swing ${o.outward ? 'into' : 'out of'} the room"><svg viewBox="0 0 24 24"><path d="M2 12h20M6 12V3M6 12v9"/><path d="M6 3a9 9 0 0 1 9 9" stroke-dasharray="2 2.2"/><path d="M6 21a9 9 0 0 0 9-9" stroke-dasharray="2 2.2"/></svg>Swing ${o.outward ? 'in' : 'out'}</button>`
         : '') +
@@ -873,14 +985,15 @@ function renderSheet(): void {
         : '') +
       `<button id="delO" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
-    const flip = (key: 'hingeAtB' | 'outward') => {
+    const flip = (key: 'hingeAtB' | 'outward' | 'noLeaf') => {
       o[key] = !o[key] || undefined;
       commit();
       sheet.dataset.key = '';
       render();
       renderUi();
     };
-    if (o.type === 'door') {
+    if (o.type === 'door') el('noLeaf').onclick = () => flip('noLeaf');
+    if (o.type === 'door' && !o.noLeaf) {
       el('flipHinge').onclick = () => flip('hingeAtB');
       el('flipSwing').onclick = () => flip('outward');
     }
@@ -901,7 +1014,7 @@ function renderSheet(): void {
       }
     }
     el('delO').onclick = () => {
-      if (!confirm(`Delete this ${o.type}?`)) return;
+      if (!confirm(`Delete this ${o.type === 'part' ? 'part of the wall' : o.type}?`)) return;
       plan.openings = plan.openings.filter((x) => x.id !== sel.id);
       closeSheet();
       resolve();
@@ -1091,12 +1204,13 @@ function openingTap(pos: Vec, tol: number): void {
   const w = hitWall(pos.x, pos.y, tol);
   const a = w && pointById(plan, w.a);
   const b = w && pointById(plan, w.b);
-  if (!w || !a || !b || (tool !== 'door' && tool !== 'window')) return;
+  if (!w || !a || !b || (tool !== 'door' && tool !== 'window' && tool !== 'part')) return;
   const len = dist(a, b);
   const p = toWorld(pos.x, pos.y);
   const along = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len || 1);
   const width = Math.min(NEW_WIDTH[tool], len);
   const o: Opening = { id: newId(), type: tool, a: w.a, b: w.b, at: Math.max(0, Math.min(len - width, along - width / 2)), width };
+  if (tool === 'part') o.color = PART_COLOR;
   plan.openings.push(o);
   tool = null;
   selection = { kind: 'opening', id: o.id };
@@ -1177,6 +1291,8 @@ canvas.addEventListener('pointerdown', (e) => {
     drag = { kind: 'point', id: pid, moved: false };
   } else if (oid) {
     selection = { kind: 'opening', id: oid };
+    const o = plan.openings.find((x) => x.id === oid)!;
+    drag = { kind: 'opening', id: oid, grab: alongWall(o.a, o.b, cursor) - o.at, down: pos, moved: false };
   } else if (w) {
     selection = { kind: 'wall', a: w.a, b: w.b };
   } else if (st) {
@@ -1223,6 +1339,24 @@ canvas.addEventListener('pointermove', (e) => {
       d.moved = true;
     }
     render();
+  } else if (drag?.kind === 'opening') {
+    const d = drag;
+    const o = plan.openings.find((x) => x.id === d.id);
+    // a finger tapping it to select it wobbles a little: that is no move
+    if (o && (d.moved || dist(pos, d.down) > 6)) {
+      // dragged onto another wall: it moves there
+      const w = nearestWall(pos, WALL_HIT * hitTol);
+      if (w && !sameWall(w, o.a, o.b) && !joinOf(plan, o.id)) {
+        o.a = w.a;
+        o.b = w.b;
+        d.grab = Math.min(d.grab, o.width);
+      }
+      const len = dist(pointById(plan, o.a)!, pointById(plan, o.b)!);
+      o.width = Math.min(o.width, len);
+      o.at = Math.max(0, Math.min(len - o.width, alongWall(o.a, o.b, cursor) - d.grab));
+      d.moved = true;
+    }
+    render();
   } else if (drag?.kind === 'pan') {
     if (Math.hypot(pos.x - drag.x, pos.y - drag.y) > 3) drag.moved = true;
     view.ox += pos.x - drag.x;
@@ -1244,6 +1378,11 @@ const pointerEnd = (e: PointerEvent) => {
   }
   const moved = drag?.kind === 'point' && drag.moved;
   if (drag?.kind === 'stair' && drag.moved) commit();
+  if (drag?.kind === 'opening' && drag.moved) {
+    drag = null;
+    resolve(); // a joined door moved: its rooms follow
+    return;
+  }
   const tapped = drag?.kind === 'pan' && !drag.moved && e.type === 'pointerup';
   drag = null;
   if (moved) resolve();
@@ -1387,7 +1526,7 @@ el('menu').addEventListener('click', () => {
 
 el('scanData').onclick = downloadScan;
 
-for (const t of ['wall', 'door', 'window', 'stair'] as const) {
+for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) {
   el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);
 }
 

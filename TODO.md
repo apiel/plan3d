@@ -62,3 +62,5 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - ~~give name to room~~ done: Name field in the room panel (tap inside the room), drawn in the middle of the room.
 
+
+- ~~wall colors: walls to build, walls (or parts of walls) to destroy, same for doors~~ done: walls, doors, windows and "part of a wall" stretches get a colour of your choice in their panel (6 swatches or any colour); the meaning is up to you. Not yet: a legend, a "before / after works" view.

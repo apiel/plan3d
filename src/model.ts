@@ -17,6 +17,8 @@ export interface PlanPoint extends Vec {
 export interface Wall {
   a: string;
   b: string;
+  /** A colour the user picked, as '#rrggbb', e.g. for walls to build or to remove. */
+  color?: string;
   /** Metres, growing outwards from the line (the line is the face inside the room). */
   thickness?: number;
 }
@@ -49,10 +51,15 @@ export interface Furniture {
   h: number;
 }
 
-/** A door or window in the wall between points `a` and `b`, `at` metres from `a`. */
+/**
+ * A door or window in the wall between points `a` and `b`, `at` metres from `a`.
+ * A `part` is no opening but a stretch of the wall, drawn in its colour.
+ */
 export interface Opening {
   id: string;
-  type: 'door' | 'window';
+  type: 'door' | 'window' | 'part';
+  /** A colour the user picked, as '#rrggbb'. */
+  color?: string;
   a: string;
   b: string;
   at: number;
@@ -63,6 +70,8 @@ export interface Opening {
   hingeAtB?: boolean;
   /** Door swings out of the room instead of into it. */
   outward?: boolean;
+  /** A doorway with only its frame: no door hangs in it. */
+  noLeaf?: boolean;
 }
 
 /** Two doors, in different rooms, that are the same door: the rooms are placed so the doors coincide. */
@@ -257,6 +266,11 @@ export function parse(text: string): Plan {
   const raw = JSON.parse(text);
   if (!Array.isArray(raw.points) || !Array.isArray(raw.walls) || !Array.isArray(raw.constraints)) {
     throw new Error('Not a plan file');
+  }
+  // plans from before colours could be picked had a status: to build or to remove
+  for (const x of [...raw.walls, ...(Array.isArray(raw.openings) ? raw.openings : [])]) {
+    if (x.change && !x.color) x.color = x.change === 'new' ? '#fb923c' : '#f87171';
+    delete x.change;
   }
   return {
     points: raw.points,
