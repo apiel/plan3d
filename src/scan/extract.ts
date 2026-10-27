@@ -13,8 +13,14 @@
 //     dominant wall directions so rooms come out with clean right angles.
 //  5. Points between floor and the wall band, away from the walls, are
 //     grouped into furniture boxes.
+//
+// The user can also mark corners, doors and windows with the crosshair while
+// scanning. Three or more marked corners replace the traced outline (each
+// wall between two marks is still fitted to the depth points), and door and
+// window edges become openings on the nearest wall.
 
 import { Vec } from '../model';
+import type { Vec3 } from '../xr';
 
 export interface Keyframe {
   cam: [number, number, number];
@@ -32,13 +38,31 @@ export interface Box {
   h: number;
 }
 
+/** What the user pointed at during the scan, in world metres. */
+export interface Marks {
+  corners: Vec3[];
+  /** Left and right edge of each door or window. */
+  openings: { type: 'door' | 'window'; a: Vec3; b: Vec3 }[];
+}
+
+export interface RoomOpening {
+  type: 'door' | 'window';
+  /** Wall from corners[wall] to corners[wall + 1]; from/to are metres from its first corner. */
+  wall: number;
+  from: number;
+  to: number;
+}
+
 export interface RoomScan {
   /** Outline in metres, axis aligned, min corner at the origin. */
   corners: Vec[];
   furniture: Box[];
+  openings: RoomOpening[];
   floorY: number;
   ceilingY: number;
 }
+
+const noMarks: Marks = { corners: [], openings: [] };
 
 const CELL = 0.05;
 const MAX_GRID = 500;
@@ -53,19 +77,31 @@ const MIN_WALL_SHARE = 0.05; // below this share of all points the upper band is
 const FURNITURE_MIN_HEIGHT = 0.25;
 const FURNITURE_MIN_AREA = 0.15; // m²
 const FURNITURE_WALL_GAP = 3; // cells kept clear along walls, so low wall points are not furniture
+const MARK_MERGE = 0.3; // corner marks closer than this are the same corner marked twice
+const MARK_TRUST = 0.3; // a fitted corner further than this from its mark is wrong, keep the mark
+const WALL_FIT_BAND = 0.15; // wall points this close to the line between two marks belong to that wall
+const WALL_FIT_MIN = 20; // fewer points than this and the wall is just the line between the marks
+const OPENING_REACH = 0.75; // door/window marks further than this from every wall are dropped
+const OPENING_MIN = 0.3; // narrower openings are a slip of the finger
 
-export function extractRoom(frames: Keyframe[]): RoomScan | null {
+export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomScan | null {
   // First pass finds which way the walls run. Rotating the capture to match
   // makes walls follow the grid, so the second pass has no diagonal staircases.
-  const first = run(frames);
+  const first = run(frames, marks);
   if (!first) return null;
-  const second = run(rotateFrames(frames, -first.phi));
+  const c = Math.cos(-first.phi);
+  const s = Math.sin(-first.phi);
+  const second = run(rotateFrames(frames, c, s), {
+    corners: marks.corners.map((p) => rotate(p, c, s)),
+    openings: marks.openings.map((o) => ({ ...o, a: rotate(o.a, c, s), b: rotate(o.b, c, s) })),
+  });
   return second ?? first;
 }
 
-function rotateFrames(frames: Keyframe[], angle: number): Keyframe[] {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
+/** Turns a point around the vertical axis (c, s: cosine and sine of the angle). */
+const rotate = (p: Vec3, c: number, s: number): Vec3 => [p[0] * c - p[2] * s, p[1], p[0] * s + p[2] * c];
+
+function rotateFrames(frames: Keyframe[], c: number, s: number): Keyframe[] {
   return frames.map((f) => {
     const pts = new Float32Array(f.points.length);
     for (let i = 0; i < f.points.length; i += 3) {
@@ -73,7 +109,7 @@ function rotateFrames(frames: Keyframe[], angle: number): Keyframe[] {
       pts[i + 1] = f.points[i + 1];
       pts[i + 2] = f.points[i] * s + f.points[i + 2] * c;
     }
-    return { cam: [f.cam[0] * c - f.cam[2] * s, f.cam[1], f.cam[0] * s + f.cam[2] * c], points: pts };
+    return { cam: rotate(f.cam, c, s), points: pts };
   });
 }
 
@@ -82,7 +118,7 @@ interface Pass extends RoomScan {
   phi: number;
 }
 
-function run(frames: Keyframe[]): Pass | null {
+function run(frames: Keyframe[], marks: Marks): Pass | null {
   const ys: number[] = [];
   for (const f of frames) for (let i = 1; i < f.points.length; i += 3) ys.push(f.points[i]);
   if (ys.length < 200) return null;
@@ -188,7 +224,8 @@ function run(frames: Keyframe[]): Pass | null {
 
   const metres = loop.map(([vx, vz]) => ({ x: minX + (vx - 1) * cell, y: minZ + (vz - 1) * cell }));
   const simplified = simplifyClosed(metres, 0.07);
-  const snapped = snapToWalls(simplified);
+  const marked = mergeClose(marks.corners.map(flat), MARK_MERGE);
+  const snapped = snapToWalls(marked.length >= 3 ? outlineFromMarks(marked, metres, walls) : simplified);
   if (!snapped || snapped.corners.length < 3) return null;
   const clean = snapped.corners;
 
@@ -208,13 +245,130 @@ function run(frames: Keyframe[]): Pass | null {
   const cx = Math.min(...clean.map((p) => p.x));
   const cy = Math.min(...clean.map((p) => p.y));
   const corners = clean.map((p) => ({ x: p.x - cx, y: p.y - cy }));
+  const toPlan = (p: Vec3): Vec => ({ x: p[0] * cos - p[2] * sin - cx, y: p[0] * sin + p[2] * cos - cy });
   return {
     corners,
     furniture: boxes.map((b) => snapBoxToWalls({ ...b, x: b.x - cx, y: b.y - cy }, corners)),
+    openings: marks.openings.flatMap((o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners) ?? []),
     floorY,
     ceilingY,
     phi: snapped.phi,
   };
+}
+
+// ---------- marks ----------
+
+const flat = (p: Vec3): Vec => ({ x: p[0], y: p[2] });
+
+/** Averages points closer than `d` to an earlier one, keeping the first one's place in the list. */
+function mergeClose(pts: Vec[], d: number): Vec[] {
+  const groups: Vec[][] = [];
+  for (const p of pts) {
+    const g = groups.find((g) => Math.hypot(g[0].x - p.x, g[0].y - p.y) < d);
+    if (g) g.push(p);
+    else groups.push([p]);
+  }
+  return groups.map((g) => ({ x: g.reduce((s, p) => s + p.x, 0) / g.length, y: g.reduce((s, p) => s + p.y, 0) / g.length }));
+}
+
+/** How far along the closed outline (metres from its first vertex) the point nearest to `p` is. */
+function alongOutline(p: Vec, outline: Vec[]): number {
+  let run = 0;
+  let best = Infinity;
+  let at = 0;
+  for (let i = 0; i < outline.length; i++) {
+    const a = outline[i];
+    const b = outline[(i + 1) % outline.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (len * len))) : 0;
+    const d = Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
+    if (d < best) {
+      best = d;
+      at = run + t * len;
+    }
+    run += len;
+  }
+  return at;
+}
+
+/**
+ * Outline through the marked corners. The traced outline only decides their
+ * order (so L shapes come out right); each wall between two marks is fitted
+ * to the wall points along it, because many depth points place a wall better
+ * than one reading at a corner, where depth is least reliable.
+ */
+function outlineFromMarks(marks: Vec[], outline: Vec[], walls: number[][]): Vec[] {
+  const order = marks
+    .map((m) => ({ m, t: alongOutline(m, outline) }))
+    .sort((a, b) => a.t - b.t)
+    .map((o) => o.m);
+  const n = order.length;
+  const lines = order.map((a, i) => fitWall(a, order[(i + 1) % n], walls));
+  return order.map((m, i) => {
+    const p = intersect(lines[(i + n - 1) % n], lines[i]);
+    return p && Math.hypot(p.x - m.x, p.y - m.y) < MARK_TRUST ? p : m;
+  });
+}
+
+/** Best line through the wall points between two marked corners, or the line through the marks. */
+function fitWall(a: Vec, b: Vec, walls: number[][]): Line {
+  let line: Line = { p: a, d: { x: b.x - a.x, y: b.y - a.y } };
+  const len = Math.hypot(line.d.x, line.d.y);
+  if (len < 1e-6) return line;
+  // second round with a tighter band drops what the first one caught by mistake
+  for (const band of [WALL_FIT_BAND, WALL_FIT_BAND / 2]) {
+    const ux = line.d.x / Math.hypot(line.d.x, line.d.y);
+    const uy = line.d.y / Math.hypot(line.d.x, line.d.y);
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    let syy = 0;
+    for (const w of walls) {
+      for (let k = 0; k < w.length; k += 2) {
+        const t = ((w[k] - a.x) * ux + (w[k + 1] - a.y) * uy) / len;
+        // leave the ends out: corners are where depth smears
+        if (t < 0.15 || t > 0.85) continue;
+        if (Math.abs((w[k] - line.p.x) * uy - (w[k + 1] - line.p.y) * ux) > band) continue;
+        n++;
+        sx += w[k];
+        sy += w[k + 1];
+        sxx += w[k] * w[k];
+        sxy += w[k] * w[k + 1];
+        syy += w[k + 1] * w[k + 1];
+      }
+    }
+    if (n < WALL_FIT_MIN) return line;
+    const mx = sx / n;
+    const my = sy / n;
+    // main direction of the points (principal axis of their spread)
+    const ang = Math.atan2(2 * (sxy / n - mx * my), sxx / n - mx * mx - (syy / n - my * my)) / 2;
+    line = { p: { x: mx, y: my }, d: { x: Math.cos(ang), y: Math.sin(ang) } };
+  }
+  return line;
+}
+
+/** A door or window from its two edge marks, on the wall nearest to it. */
+function placeOpening(type: 'door' | 'window', a: Vec, b: Vec, corners: Vec[]): RoomOpening | undefined {
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  let wall = -1;
+  let best = OPENING_REACH;
+  corners.forEach((p, i) => {
+    const d = distToSegment(mid, p, corners[(i + 1) % corners.length]);
+    if (d < best) {
+      best = d;
+      wall = i;
+    }
+  });
+  if (wall < 0) return undefined;
+  const p = corners[wall];
+  const q = corners[(wall + 1) % corners.length];
+  const len = Math.hypot(q.x - p.x, q.y - p.y);
+  const along = (v: Vec) => Math.max(0, Math.min(len, ((v.x - p.x) * (q.x - p.x) + (v.y - p.y) * (q.y - p.y)) / len));
+  const from = Math.min(along(a), along(b));
+  const to = Math.max(along(a), along(b));
+  return to - from >= OPENING_MIN ? { type, wall, from, to } : undefined;
 }
 
 /** Furniture near a wall was cut short by the clear strip along walls: extend it to the wall. */
@@ -618,7 +772,7 @@ function snapToWalls(poly: Vec[]): { corners: Vec[]; phi: number } | undefined {
   }
   if (sides.length < 3) return undefined;
 
-  const lineOf = (s: Side): { p: Vec; d: Vec } =>
+  const lineOf = (s: Side): Line =>
     s.axis === 'h'
       ? { p: { x: 0, y: s.at }, d: { x: 1, y: 0 } }
       : s.axis === 'v'
@@ -629,15 +783,20 @@ function snapToWalls(poly: Vec[]): { corners: Vec[]; phi: number } | undefined {
   for (let i = 0; i < sides.length; i++) {
     const prev = sides[(i + sides.length - 1) % sides.length];
     const cur = sides[i];
-    const l1 = lineOf(prev);
-    const l2 = lineOf(cur);
-    const cross = l1.d.x * l2.d.y - l1.d.y * l2.d.x;
-    if (Math.abs(cross) < 1e-6 * Math.hypot(l1.d.x, l1.d.y) * Math.hypot(l2.d.x, l2.d.y)) {
-      corners.push({ x: cur.a.x, y: cur.a.y });
-      continue;
-    }
-    const t = ((l2.p.x - l1.p.x) * l2.d.y - (l2.p.y - l1.p.y) * l2.d.x) / cross;
-    corners.push({ x: l1.p.x + l1.d.x * t, y: l1.p.y + l1.d.y * t });
+    corners.push(intersect(lineOf(prev), lineOf(cur)) ?? { x: cur.a.x, y: cur.a.y });
   }
   return { corners, phi };
+}
+
+interface Line {
+  p: Vec;
+  d: Vec;
+}
+
+/** Where two lines cross, or undefined when they are parallel. */
+function intersect(l1: Line, l2: Line): Vec | undefined {
+  const cross = l1.d.x * l2.d.y - l1.d.y * l2.d.x;
+  if (Math.abs(cross) < 1e-6 * Math.hypot(l1.d.x, l1.d.y) * Math.hypot(l2.d.x, l2.d.y)) return undefined;
+  const t = ((l2.p.x - l1.p.x) * l2.d.y - (l2.p.y - l1.p.y) * l2.d.x) / cross;
+  return { x: l1.p.x + l1.d.x * t, y: l1.p.y + l1.d.y * t };
 }

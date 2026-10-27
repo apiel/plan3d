@@ -4,7 +4,7 @@ export default defineConfig({
   base: './',
   build: {
     rollupOptions: {
-      input: { main: 'index.html', depth: 'depth.html', scan: 'scan.html' },
+      input: { main: 'index.html', depth: 'depth.html' },
     },
   },
   test: {

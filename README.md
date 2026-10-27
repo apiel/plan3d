@@ -27,7 +27,7 @@ Node 18 is enough (Vite 5, same as plinth3d).
 
 ### Pages
 
-- `scan.html` is the phone scan page (the main capture path). Start it, turn slowly aiming at walls, floor and ceiling, walk around the room, then Finish. The outline is added to the plan and the editor opens. A top-down mini map shows what has been seen so far.
+- **Scan room (phone)** in the editor starts the AR scan straight away (if the phone or browser lacks something, the editor says what is missing). Turn slowly aiming at walls, floor and ceiling, walk around the room, then Finish: the outline is added to the plan and you are back in the editor. A top-down mini map shows what has been seen so far. Optionally, while scanning, put the centre cross on each corner and tap **Corner**; for a door or window tap **Door**/**Window** at one side of it (aim at the wall just beside the frame), then aim at the other side, where a dashed line follows the cross with the width under it, and tap the button again, now labelled "2nd side". Marks are drawn over the camera view. The fourth button cancels a half-placed door or window ("Cancel door"), removes the mark under the cross (it turns red, "Remove"), or otherwise undoes the last mark ("Undo").
 - `index.html` is the plan editor (desktop-friendly). Furniture from scans shows as boxes you can drag or delete. You can also draw a room, click a wall to set its measured length, click a corner to make it a right angle, drag corners, pan and zoom. Plans are kept in `localStorage` and can be exported and imported as JSON.
 - `depth.html` is the phone test page for WebXR depth sensing. See below.
 
@@ -42,17 +42,19 @@ Node 18 is enough (Vite 5, same as plinth3d).
 5. Finds the dominant wall direction, rotates the capture to match, and snaps walls to it so rooms come out with clean right angles.
 6. Groups the points between the floor and the wall band, inside the room, into furniture boxes (size and height), extended to the wall when they stand against one.
 
+Marks change steps 4 and 5. With 3 or more marked corners, the marks define the outline instead of the traced free region: the traced outline only decides their order (so L shapes work), and each wall between two marks is refitted to the wall-band points along its middle 70%, because many depth points place a wall better than one reading at a corner. A fitted corner more than 30 cm from its mark falls back to the mark. So mark every corner, or none. Door and window marks become openings on the nearest wall (within 75 cm), stored in the plan as an offset from the wall's first corner plus a width, so they follow the wall when the solver moves it.
+
 The extraction is covered by tests on synthetic rooms (rectangle, rotated rectangle, L shape, noisy readings with stray points, a furnished room). On a real phone (first try, furnished room, before the upper-band change) the result was "not bad but messy".
 
 ### Debugging a real scan
 
-After a scan, `scan.html` offers **Download scan data** (raw keyframes as JSON). On the computer:
+After a scan, the editor offers **Download last scan data** (raw keyframes and marks as JSON; kept in memory until the page is reloaded). On the computer:
 
 ```
 npm run replay -- scan-....json
 ```
 
-prints floor/ceiling, wall lengths and furniture, and writes `scan-....svg`: raw top-down points on the left (green: wall band, grey: lower, red: camera positions), the extracted room and furniture on the right. Use it to tune the constants at the top of `src/scan/extract.ts`, and add good files as test fixtures.
+prints floor/ceiling, wall lengths, doors/windows and furniture, and writes `scan-....svg`: raw top-down points on the left (green: wall band, grey: lower, red: camera positions, pink squares: marked corners, blue/cyan lines: marked doors/windows), the extracted room and furniture on the right. Use it to tune the constants at the top of `src/scan/extract.ts`, and add good files as test fixtures.
 
 ## Depth test on a phone
 
@@ -74,7 +76,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian). `SIGMA` sets how much each kind of fact is trusted. |
 | `src/solver.test.ts` | Solver tests (vitest). |
 | `src/main.ts` | Canvas editor and side panel. |
-| `src/scan.ts` | AR scan page: collects depth keyframes, mini map, adds the room to the plan. |
+| `src/scan.ts` | AR scan, started from the editor: collects depth keyframes, crosshair marks drawn over the camera, mini map, adds the room to the plan. |
 | `src/scan/extract.ts` | Keyframes to room outline (see above). |
 | `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
 | `scripts/replay.ts` | Replays a downloaded scan through the extraction and writes an SVG. |

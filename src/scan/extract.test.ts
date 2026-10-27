@@ -220,6 +220,67 @@ describe('extractRoom', () => {
     expect(couch!.y + couch!.d).toBeCloseTo(Math.max(...room.corners.map((c) => c.y)), 2);
   });
 
+  it('uses marked corners, with the walls fitted to the depth points', () => {
+    const l: Vec[] = [
+      { x: 0, y: 0 },
+      { x: 5, y: 0 },
+      { x: 5, y: 2 },
+      { x: 3, y: 2 },
+      { x: 3, y: 4 },
+      { x: 0, y: 4 },
+    ];
+    const frames = scan(l, 2.5, [
+      { x: 1, y: 1 },
+      { x: 4, y: 1 },
+      { x: 1, y: 3 },
+    ]);
+    // marks are off by up to 8 cm, in a random order, one corner marked twice
+    const rand = rng(3);
+    const off = () => (rand() - 0.5) * 0.16;
+    const marked = [l[3], l[0], l[5], l[1], l[4], l[2], l[0]];
+    const corners = marked.map((p): [number, number, number] => [p.x + off(), 1.2, p.y + off()]);
+    const room = extractRoom(frames, { corners, openings: [] })!;
+    expect(room.corners).toHaveLength(6);
+    const s = sides(room.corners);
+    const truth = sides(l);
+    s.forEach((v, i) => expect(Math.abs(v - truth[i])).toBeLessThan(0.05));
+  });
+
+  it('places doors and windows on the nearest wall', () => {
+    const cams = [
+      { x: 1, y: 1 },
+      { x: 3, y: 1 },
+      { x: 1, y: 2 },
+      { x: 3, y: 2 },
+    ];
+    // a turned capture, so the openings must follow the same rotation as the walls
+    const a = 0.3;
+    const turn = (p: Vec): Vec => ({ x: p.x * Math.cos(a) - p.y * Math.sin(a), y: p.x * Math.sin(a) + p.y * Math.cos(a) });
+    const at = (p: Vec, y: number): [number, number, number] => {
+      const t = turn(p);
+      return [t.x, y, t.y];
+    };
+    const frames = scan(rect.map(turn), 2.5, cams.map(turn));
+    const room = extractRoom(frames, {
+      corners: [],
+      openings: [
+        { type: 'door', a: at({ x: 0.5, y: 3.02 }, 1), b: at({ x: 1.4, y: 2.97 }, 1) }, // 90 cm, long wall
+        { type: 'window', a: at({ x: 4, y: 1.0 }, 1.5), b: at({ x: 4, y: 2.2 }, 1.5) }, // 120 cm, short wall
+        { type: 'door', a: at({ x: 2, y: 1.5 }, 1), b: at({ x: 2.5, y: 1.5 }, 1) }, // middle of the room: dropped
+      ],
+    })!;
+    expect(room.openings).toHaveLength(2);
+    const wallLen = (i: number) => dist(room.corners[i], room.corners[(i + 1) % room.corners.length]);
+    const door = room.openings.find((o) => o.type === 'door')!;
+    expect(wallLen(door.wall)).toBeCloseTo(4, 0);
+    expect(door.to - door.from).toBeCloseTo(0.9, 1);
+    // 50 cm from one end of the wall, whichever end the wall starts at
+    expect(Math.min(door.from, wallLen(door.wall) - door.to)).toBeCloseTo(0.5, 1);
+    const win = room.openings.find((o) => o.type === 'window')!;
+    expect(wallLen(win.wall)).toBeCloseTo(3, 0);
+    expect(win.to - win.from).toBeCloseTo(1.2, 1);
+  });
+
   it('gives up on too little data', () => {
     expect(extractRoom([])).toBeNull();
     expect(extractRoom([{ cam: [0, 1, 0], points: new Float32Array(30) }])).toBeNull();

@@ -23,3 +23,17 @@ export function forward(view: XRView): Vec3 {
   const m = view.transform.matrix;
   return [-m[8], -m[9], -m[10]];
 }
+
+/** World point into view space: camera at the origin, looking down -z. */
+export function toView(view: XRView, p: Vec3): Vec3 {
+  return mulPoint(view.transform.inverse.matrix, p);
+}
+
+/** View-space point in front of the camera to normalized view coords (0..1, origin top-left), the inverse of `unproject`. */
+export function project(view: XRView, [x, y, z]: Vec3): [number, number] {
+  const m = view.projectionMatrix;
+  const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+  const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+  const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+  return [(cx / w + 1) / 2, (1 - cy / w) / 2];
+}

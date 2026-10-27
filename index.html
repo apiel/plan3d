@@ -13,8 +13,10 @@
 
     <section>
       <div class="row">
-        <a id="scan" class="button" href="scan.html">Scan room (phone)</a>
+        <button id="scan" class="primary">Scan room (phone)</button>
+        <button id="scanData" hidden>Download last scan data</button>
       </div>
+      <p id="scanMsg" class="warn" hidden></p>
       <div class="row">
         <button id="draw">Draw room</button>
         <button id="sample">Sample room</button>
@@ -37,6 +39,24 @@
     <p class="muted"><a href="depth.html">Depth test page</a> (phone, AR)</p>
   </aside>
   <canvas id="canvas"></canvas>
+</div>
+
+<div id="scanOverlay">
+  <canvas id="arDraw"></canvas>
+  <div id="hud"></div>
+  <div id="cross"></div>
+  <div id="aimText"></div>
+  <canvas id="map" width="200" height="200"></canvas>
+  <div id="marks">
+    <button id="markCorner">Corner</button>
+    <button id="markDoor">Door</button>
+    <button id="markWindow">Window</button>
+    <button id="markRemove">Undo</button>
+  </div>
+  <div id="bar">
+    <button id="cancel" class="secondary">Cancel</button>
+    <button id="finish">Finish</button>
+  </div>
 </div>
 <script type="module" src="/src/main.ts"></script>
 </body>

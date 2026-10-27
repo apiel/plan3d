@@ -33,14 +33,25 @@ export interface Furniture {
   h: number;
 }
 
+/** A door or window in the wall between points `a` and `b`, `at` metres from `a`. */
+export interface Opening {
+  id: string;
+  type: 'door' | 'window';
+  a: string;
+  b: string;
+  at: number;
+  width: number;
+}
+
 export interface Plan {
   points: PlanPoint[];
   walls: Wall[];
   constraints: Constraint[];
   furniture: Furniture[];
+  openings: Opening[];
 }
 
-export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [] });
+export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [] });
 
 export const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -100,6 +111,7 @@ export function removePoint(plan: Plan, id: string): void {
   plan.constraints = plan.constraints.filter((c) =>
     c.type === 'distance' ? c.a !== id && c.b !== id : c.a !== id && c.b !== id && c.c !== id
   );
+  plan.openings = plan.openings.filter((o) => o.a !== id && o.b !== id);
 }
 
 let counter = 0;
@@ -125,6 +137,7 @@ export function parse(text: string): Plan {
     walls: raw.walls,
     constraints: raw.constraints,
     furniture: Array.isArray(raw.furniture) ? raw.furniture : [],
+    openings: Array.isArray(raw.openings) ? raw.openings : [],
   };
 }
 

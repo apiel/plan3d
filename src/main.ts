@@ -17,6 +17,7 @@ import {
   setDistance,
   toggleRightAngle,
 } from './model';
+import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { SolveResult, apply, solve } from './solver';
 import { load, save } from './storage';
 
@@ -212,6 +213,27 @@ function render(): void {
     ctx.setLineDash([]);
     const len = dist(a, b);
     label(`${measured ? '' : '~'}${(len * 100).toFixed(0)} cm`, { x: (sa.x + sb.x) / 2, y: (sa.y + sb.y) / 2 }, measured ? '#4ade80' : '#c3c9d2', measured);
+  }
+
+  // doors and windows, over their wall
+  for (const o of plan.openings) {
+    const a = pointById(plan, o.a);
+    const b = pointById(plan, o.b);
+    if (!a || !b) continue;
+    const len = dist(a, b) || 1;
+    const at = (d: number) => toScreen({ x: a.x + ((b.x - a.x) * d) / len, y: a.y + ((b.y - a.y) * d) / len });
+    const s1 = at(o.at);
+    const s2 = at(o.at + o.width);
+    const color = o.type === 'door' ? '#f97316' : '#22d3ee';
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(s1.x, s1.y);
+    ctx.lineTo(s2.x, s2.y);
+    ctx.stroke();
+    if (o.width * view.scale > 40) {
+      label(`${o.type === 'door' ? 'door' : 'window'} ${(o.width * 100).toFixed(0)}`, { x: (s1.x + s2.x) / 2, y: (s1.y + s2.y) / 2 + 16 }, color, false);
+    }
   }
 
   // right-angle markers
@@ -497,6 +519,34 @@ window.addEventListener('resize', () => {
 });
 
 // ---------- toolbar ----------
+
+// the AR session must be asked for inside the tap, so support is checked up front
+const scanMissing = missingForScan();
+const scanMsg = el('scanMsg');
+const showScanMsg = (text: string | null) => {
+  scanMsg.hidden = !text;
+  scanMsg.textContent = text ?? '';
+};
+
+el('scan').onclick = async () => {
+  const missing = await scanMissing;
+  if (missing) return showScanMsg(missing);
+  showScanMsg(null);
+  try {
+    await startScan((added) => {
+      el('scanData').hidden = !hasScanData();
+      if (!added) return;
+      plan = load();
+      selection = null;
+      fit();
+      resolve();
+    });
+  } catch (err) {
+    showScanMsg((err as Error).message);
+  }
+};
+
+el('scanData').onclick = downloadScan;
 
 el('draw').onclick = () => {
   if (drawing) {

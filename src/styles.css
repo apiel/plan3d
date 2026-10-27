@@ -22,7 +22,7 @@ section { margin: 1rem 0; }
 a { color: var(--accent); }
 .row { display: flex; gap: .4rem; margin-bottom: .4rem; flex-wrap: wrap; }
 button { font: inherit; color: var(--text); background: #2a2f38; border: 1px solid var(--line); border-radius: .4rem; padding: .4rem .7rem; cursor: pointer; }
-a.button { display: inline-block; font: inherit; color: #fff; background: var(--accent); border-radius: .4rem; padding: .5rem 1rem; text-decoration: none; }
+button.primary { color: #fff; background: var(--accent); border-color: var(--accent); padding: .5rem 1rem; }
 button:hover { background: #343a45; }
 button.on { background: var(--accent); border-color: var(--accent); }
 button.danger { color: var(--warn); }
