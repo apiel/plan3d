@@ -20,7 +20,11 @@ import {
   WallTie,
   addWallTie,
   findAngle,
+  PlanPoint,
+  wallUnderCorner,
   removeWallTie,
+  roomName,
+  setRoomName,
   setAngle,
   toggleRightAngle,
   wallThickness,
@@ -69,6 +73,8 @@ let tool: Tool = null;
 /** With the wall tool: the corner the next wall starts from. */
 let wallFrom: string | null = null;
 let cursor: Vec = { x: 0, y: 0 };
+/** Hit areas grow for fingers: TOUCH_HIT with touch, 1 with a mouse, as the last pointer was. */
+let hitTol = 1;
 let lastSolve: SolveResult | null = null;
 /** Wall length labels as drawn, so tapping a number edits that wall. */
 let labelBoxes: { a: string; b: string; x: number; y: number; w: number; h: number }[] = [];
@@ -518,6 +524,16 @@ function render(): void {
     labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
+  // room names, in the middle of the room
+  for (const ids of rooms) {
+    const name = roomName(plan, ids);
+    const loop = name && roomLoop(plan, ids);
+    if (!loop) continue;
+    const pts = loop.map((id) => pointById(plan, id)!);
+    const at = toScreen({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });
+    dimBoxes.push({ ...at, ...label(name, at, '#e6e8eb', true) });
+  }
+
   // the angle at the selected corner (also while dragging it): a square when it is held at 90 degrees
   const corner = selection?.kind === 'point' ? pointById(plan, selection.id) : undefined;
   const nb = corner && cornerNeighbours(plan, corner.id);
@@ -563,20 +579,21 @@ function render(): void {
   }
   if (tool === 'wall') {
     if (wallFrom && !plan.walls.some((w) => w.a === wallFrom || w.b === wallFrom)) drawAlongWall(pointById(plan, wallFrom)!, wallFrom);
-    drawAlongWall(cursor);
+    drawAlongWall(wallEnd(cursor, hitTol));
   }
 
   // the wall being drawn, from its first corner to the finger
   if (wallFrom) {
     const last = pointById(plan, wallFrom)!;
     const sl = toScreen(last);
-    const sc = toScreen(cursor);
+    const end = hitPoint(toScreen(cursor).x, toScreen(cursor).y, hitTol) ? cursor : wallEnd(cursor, hitTol);
+    const sc = toScreen(end);
     ctx.setLineDash([4, 4]);
     ctx.strokeStyle = '#60a5fa';
     ctx.lineWidth = 2;
     line(sl, sc);
     ctx.setLineDash([]);
-    label(`${(dist(last, cursor) * 100).toFixed(0)} cm`, { x: (sl.x + sc.x) / 2, y: (sl.y + sc.y) / 2 }, '#60a5fa', false);
+    label(`${(dist(last, end) * 100).toFixed(0)} cm`, { x: (sl.x + sc.x) / 2, y: (sl.y + sc.y) / 2 }, '#60a5fa', false);
   }
 
   // points
@@ -700,6 +717,8 @@ const unit = (v: Vec): Vec => {
 };
 
 // ---------- bottom sheet and the rest of the UI ----------
+
+const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const head = (title: string, detail = '') =>
   `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
@@ -922,8 +941,20 @@ function renderSheet(): void {
     const area = roomArea(plan, ids);
     const doors = plan.openings.filter((o) => ids.has(o.a)).length;
     sheet.innerHTML =
-      head('Room', `${area !== null ? `${area.toFixed(1)} m² · ` : ''}${ids.size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
+      head(escapeHtml(roomName(plan, ids) ?? 'Room'), `${area !== null ? `${area.toFixed(1)} m² · ` : ''}${ids.size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
+      `<form id="nameForm" class="row"><label class="num"><span class="muted">Name</span><input id="name" type="text" enterkeyhint="done" autocomplete="off" placeholder="Kitchen, bedroom…" value="${escapeHtml(roomName(plan, ids) ?? '')}"></label><button id="nameOk" class="primary">OK</button></form>` +
       `<div class="row"><button id="delRoom" class="icon danger" title="Delete this room"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete room</button></div>`;
+    el('nameForm').onsubmit = (e) => {
+      e.preventDefault();
+      setRoomName(plan, ids, el<HTMLInputElement>('name').value.trim());
+      el<HTMLInputElement>('name').blur();
+      sheet.dataset.key = '';
+      commit();
+      render();
+      renderUi();
+    };
+    el('nameOk').onmousedown = (e) => e.preventDefault();
+    el('nameOk').onpointerdown = (e) => e.preventDefault();
     el('delRoom').onclick = () => {
       if (!confirm('Delete this whole room, with its walls, doors and windows?')) return;
       deleteRoom(plan, sel.id);
@@ -1006,15 +1037,44 @@ function setTool(t: Tool): void {
   resolve();
 }
 
+/** How close to square a new wall must be drawn to snap, in degrees. */
+const SQUARE_SNAP = 5;
+
+/**
+ * Where a new corner goes for a tap at `at`: the wall from the last corner
+ * snaps square to the walls already there (or to the screen when there are
+ * none) if drawn nearly so, and a tap on a wall puts the corner exactly on it.
+ */
+function wallEnd(at: Vec, tol: number): Vec {
+  const from = wallFrom ? pointById(plan, wallFrom) : undefined;
+  if (from) {
+    const refs = plan.walls
+      .filter((w) => w.a === from.id || w.b === from.id)
+      .map((w) => pointById(plan, w.a === from.id ? w.b : w.a))
+      .filter((p): p is PlanPoint => !!p)
+      .map((p) => unit(sub(p, from)));
+    const host = wallUnderCorner(plan, from.id);
+    const ha = host && pointById(plan, host.a);
+    const hb = host && pointById(plan, host.b);
+    if (ha && hb) refs.push(unit(sub(hb, ha)));
+    if (!refs.length) refs.push({ x: 1, y: 0 });
+    const v = sub(at, from);
+    const len = Math.hypot(v.x, v.y);
+    const square = refs
+      .flatMap((r) => [r, { x: -r.y, y: r.x }, { x: -r.x, y: -r.y }, { x: r.y, y: -r.x }])
+      .find((d) => (v.x * d.x + v.y * d.y) / (len || 1) > Math.cos((SQUARE_SNAP * Math.PI) / 180));
+    if (square) at = { x: from.x + square.x * len, y: from.y + square.y * len };
+  }
+  return wallUnder(at, tol, wallFrom ?? undefined)?.at ?? at;
+}
+
 /** Wall tool: each tap is a corner; walls join consecutive taps. */
 function wallTap(pos: Vec, tol: number): void {
   const hit = hitPoint(pos.x, pos.y, tol);
   if (hit && hit === wallFrom) {
     stopWall();
   } else {
-    // a tap on a wall puts the corner exactly on it
-    const at = toWorld(pos.x, pos.y);
-    const id = hit ?? addPoint(plan, wallUnder(at, tol)?.at ?? at).id;
+    const id = hit ?? addPoint(plan, wallEnd(toWorld(pos.x, pos.y), tol)).id;
     if (!wallFrom) {
       wallFrom = id;
     } else {
@@ -1079,6 +1139,7 @@ canvas.addEventListener('pointerdown', (e) => {
 
   cursor = toWorld(pos.x, pos.y);
   const tol = e.pointerType === 'touch' ? TOUCH_HIT : 1;
+  hitTol = tol;
   selectionBeforeTouch = selection;
 
   if (tiePick) {
@@ -1133,6 +1194,7 @@ canvas.addEventListener('pointermove', (e) => {
   const pos = eventPos(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, pos);
   cursor = toWorld(pos.x, pos.y);
+  hitTol = e.pointerType === 'touch' ? TOUCH_HIT : 1;
   if (drag?.kind === 'pinch') {
     if (pointers.size < 2) return;
     const now = pinchState();

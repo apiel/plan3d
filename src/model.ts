@@ -10,6 +10,8 @@ export interface PlanPoint extends Vec {
   /** Where the capture (depth/AR/hand-drawn) put this point. The solver pulls
    *  towards it weakly, so manual measurements win when they disagree. */
   sensor: Vec;
+  /** The name of the room this corner belongs to, see `roomName`. */
+  room?: string;
 }
 
 export interface Wall {
@@ -124,14 +126,54 @@ export function clearDistance(plan: Plan, a: string, b: string): void {
   );
 }
 
-/** The two neighbours of a corner, if exactly two walls meet at it. */
+/** How close, in metres, a wall's end must be to another wall to count as standing on it. */
+const ON_WALL = 0.05;
+
+/** The wall a corner stands on partway along (a T junction), not one of its own walls. */
+export function wallUnderCorner(plan: Plan, id: string): Wall | undefined {
+  const p = pointById(plan, id);
+  if (!p) return undefined;
+  let best: Wall | undefined;
+  let bestD = ON_WALL;
+  for (const w of plan.walls) {
+    if (w.a === id || w.b === id) continue;
+    const a = pointById(plan, w.a);
+    const b = pointById(plan, w.b);
+    if (!a || !b) continue;
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+    const t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+    if (t <= 0 || t >= 1) continue;
+    const d = dist(p, { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) });
+    if (d < bestD) {
+      best = w;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+/**
+ * The two neighbours of a corner, if exactly two walls meet at it. A wall
+ * ending on another wall (a T junction) counts that wall's first end as the
+ * other neighbour, so the angle between the two walls can be held too.
+ */
 export function cornerNeighbours(plan: Plan, id: string): [string, string] | undefined {
   const others: string[] = [];
   for (const w of plan.walls) {
     if (w.a === id) others.push(w.b);
     else if (w.b === id) others.push(w.a);
   }
-  return others.length === 2 ? [others[0], others[1]] : undefined;
+  if (others.length === 2) return [others[0], others[1]];
+  const host = others.length === 1 ? wallUnderCorner(plan, id) : undefined;
+  return host ? [others[0], host.a] : undefined;
+}
+
+/** A room's name: kept on its corners, so it survives corners coming and going. */
+export const roomName = (plan: Plan, ids: Set<string>): string | undefined =>
+  plan.points.find((p) => ids.has(p.id) && p.room)?.room;
+
+export function setRoomName(plan: Plan, ids: Set<string>, name: string): void {
+  for (const p of plan.points) if (ids.has(p.id)) p.room = name || undefined;
 }
 
 export function findRightAngle(plan: Plan, id: string): boolean {

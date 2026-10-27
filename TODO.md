@@ -52,25 +52,13 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 # IDEA from dev
 
-- ~~when camera is on there should be a cross/point in the center and then button which allow us to place corner of the room, to place door, place window (place furniture)~~ corners, doors and windows done (see Next); furniture marks still open: tap on an object to keep the nearest detected box and name it.
-
-
 - 3d plan should also take 8 picture of the room, which can be updated over time, to have a timeline
-
-- ~~the right angle symbol look like there is a pilone in the room~~ done: the angle is only drawn at the selected corner (also while dragging), square at 90°, otherwise an arc and the value.
-
-- ~~we need to be able to place stair case~~ done: stairs tool in the editor (straight flight: width, length, steps, turn, up/down, drag to move), and **Stairs** in the scan (3 marks: both ends of the bottom step's edge, then the top edge; steps counted from the height). Scan marks not tried on the phone. Not yet: L/U-shaped stairs, linking floors.
-
-- ~~ctrl+z ctrl+shift+z should work for undo redo~~ done.
 
 - How can i share a plan with someone...?
 
-- ~~Now i was adding manually a wall in middle of another wall. Would be great to see his distance from the other walls...~~ done: a corner on another wall shows its distance to both ends of that wall (while drawing, when selected, while dragging); tapping on a wall snaps the corner onto it and dragging slides it along. Not yet: typing those distances, and nothing keeps the corner on the wall when the solver moves things.
-
-
 - Would there be way to kind of suggest door, windows and corner in the scan view? and then we could apply them or not
 
-- when adding a wall manually i am not able to set angle to 90degree
+- ~~when adding a wall manually i am not able to set angle to 90degree~~ done: a wall ending on another wall (T junction) can be held at 90° or any angle from its corner, like a normal corner (and "square all" includes it); while drawing, a wall within 5° of square to the walls at its first corner (or of the screen axes for the first wall) snaps square.
 
-- give name to room
+- ~~give name to room~~ done: Name field in the room panel (tap inside the room), drawn in the middle of the room.
 
