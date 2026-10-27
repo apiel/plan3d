@@ -182,6 +182,29 @@ function hitWall(sx: number, sy: number, tol: number): { a: string; b: string } 
   return best;
 }
 
+/** The wall a spot is on, away from its ends (a T junction), and the spot moved onto it; `skip` leaves out the walls of that corner. */
+function wallUnder(p: Vec, tol: number, skip?: string): { a: Vec; b: Vec; at: Vec } | undefined {
+  const s = toScreen(p);
+  let best: { a: Vec; b: Vec; at: Vec } | undefined;
+  let bestD = WALL_HIT * tol;
+  for (const w of plan.walls) {
+    if (w.a === skip || w.b === skip) continue;
+    const a = pointById(plan, w.a);
+    const b = pointById(plan, w.b);
+    if (!a || !b) continue;
+    const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+    const t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+    if (t <= 0 || t >= 1) continue;
+    const at = { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
+    const d = dist(toScreen(at), s);
+    if (d <= bestD) {
+      best = { a, b, at };
+      bestD = d;
+    }
+  }
+  return best;
+}
+
 function hitOpening(sx: number, sy: number, tol: number): string | undefined {
   for (const o of plan.openings) {
     const g = openingGeometry(o);
@@ -469,6 +492,7 @@ function render(): void {
 
   // wall lengths, over the openings, and remembered for tapping
   labelBoxes = [];
+  dimBoxes = [];
   const rooms = roomComponents(plan).map((ids) => new Set(ids));
   for (const wall of plan.walls) {
     const a = pointById(plan, wall.a);
@@ -528,6 +552,20 @@ function render(): void {
     label(`${deg.toFixed(deg % 1 < 0.05 || deg % 1 > 0.95 ? 0 : 1)}°`, { x: sp.x + bis.x * reach, y: sp.y + bis.y * reach }, held ? '#4ade80' : '#60a5fa', held);
   }
 
+  // a corner on another wall (a T junction): how far it is from that wall's ends;
+  // the loose end of a wall: how far it is from the wall it points at
+  for (const p of plan.points) {
+    const own = plan.walls.filter((w) => w.a === p.id || w.b === p.id);
+    if (!own.length) continue;
+    const other = pointById(plan, own[0].a === p.id ? own[0].b : own[0].a);
+    drawAlongWall(p, p.id, other);
+    if (own.length === 1 && other) drawGap(p, p.id, other);
+  }
+  if (tool === 'wall') {
+    if (wallFrom && !plan.walls.some((w) => w.a === wallFrom || w.b === wallFrom)) drawAlongWall(pointById(plan, wallFrom)!, wallFrom);
+    drawAlongWall(cursor);
+  }
+
   // the wall being drawn, from its first corner to the finger
   if (wallFrom) {
     const last = pointById(plan, wallFrom)!;
@@ -550,6 +588,95 @@ function render(): void {
     ctx.arc(s.x, s.y, selected ? 7 : 5, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+/** Distances from a spot on a wall to both ends of it, drawn as dimension lines beside the wall. */
+function drawAlongWall(p: Vec, skip?: string, towards?: Vec): void {
+  const host = wallUnder(p, 1, skip);
+  if (!host) return;
+  const sp = toScreen(host.at);
+  const u = unit(sub(toScreen(host.b), toScreen(host.a)));
+  let n = { x: -u.y * 16, y: u.x * 16 };
+  // on the side the corner's own wall goes off to
+  if (towards) {
+    const st = toScreen(towards);
+    if ((st.x - sp.x) * n.x + (st.y - sp.y) * n.y < 0) n = { x: -n.x, y: -n.y };
+  }
+  for (const end of [host.a, host.b]) {
+    const se = toScreen(end);
+    dimension({ x: se.x + n.x, y: se.y + n.y }, { x: sp.x + n.x, y: sp.y + n.y }, dist(end, host.at));
+  }
+}
+
+/** Dimension labels drawn so far in this frame, so the next ones keep clear of them. */
+let dimBoxes: { x: number; y: number; w: number; h: number }[] = [];
+
+/** Whether a label at `at` would cover a door, a window, a wall line or another label. */
+function crowded(at: Vec, w: number, h: number): boolean {
+  const hits = (b: { x: number; y: number; w: number; h: number }) => Math.abs(at.x - b.x) < (w + b.w) / 2 + 2 && Math.abs(at.y - b.y) < (h + b.h) / 2 + 2;
+  if (labelBoxes.some(hits) || dimBoxes.some(hits)) return true;
+  for (const o of plan.openings) {
+    const g = openingGeometry(o);
+    if (!g) continue;
+    // the opening and, for a door, the square its leaf swings through, on either side of the wall
+    const r = o.type === 'door' ? o.width : wallThickness(plan, o.a, o.b);
+    const corners = [g.p1, g.p2].flatMap((p) => [-1, 1].map((k) => toScreen({ x: p.x + g.n.x * r * k, y: p.y + g.n.y * r * k })));
+    const xs = corners.map((c) => c.x);
+    const ys = corners.map((c) => c.y);
+    const box = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2, w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    if (hits(box)) return true;
+  }
+  for (const wall of plan.walls) {
+    const a = pointById(plan, wall.a);
+    const b = pointById(plan, wall.b);
+    if (!a || !b) continue;
+    const sa = toScreen(a);
+    const sb = toScreen(b);
+    if ([-w / 2, 0, w / 2].some((dx) => segDist(at.x + dx, at.y, sa, sb) < h / 2 + 1)) return true;
+  }
+  return false;
+}
+
+/** A dotted dimension line with its length, the label put where it covers nothing if it can. */
+function dimension(s1: Vec, s2: Vec, metres: number): void {
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 1;
+  ctx.lineCap = 'butt';
+  ctx.setLineDash([3, 4]);
+  line(s1, s2);
+  ctx.setLineDash([]);
+  if (dist(s1, s2) < 40) return; // too short to hold its number: zoom in to see it
+  const text = `${(metres * 100).toFixed(0)} cm`;
+  ctx.font = '13px system-ui, sans-serif';
+  const w = ctx.measureText(text).width + 8;
+  const h = 18;
+  const along = (f: number) => ({ x: s1.x + (s2.x - s1.x) * f, y: s1.y + (s2.y - s1.y) * f });
+  const spot = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8].map(along).find((at) => crowded(at, w, h) === false) ?? along(0.5);
+  label(text, spot, '#38bdf8', false);
+  dimBoxes.push({ ...spot, w, h });
+}
+
+/** From the loose end `p` of the wall `from`-`p`, carried on straight: the distance to the first wall it meets. */
+function drawGap(p: Vec, skip: string, from: Vec): void {
+  const d = unit(sub(p, from));
+  let best = Infinity;
+  for (const w of plan.walls) {
+    if (w.a === skip || w.b === skip) continue;
+    const a = pointById(plan, w.a);
+    const b = pointById(plan, w.b);
+    if (!a || !b) continue;
+    // p + t d = a + s (b - a)
+    const e = sub(b, a);
+    const den = d.x * e.y - d.y * e.x;
+    if (Math.abs(den) < 1e-9) continue;
+    const ap = sub(a, p);
+    const t = (ap.x * e.y - ap.y * e.x) / den;
+    const s = (ap.x * d.y - ap.y * d.x) / den;
+    if (t > 0.005 && s >= 0 && s <= 1 && t < best) best = t;
+  }
+  if (best === Infinity) return;
+  const sp = toScreen(p);
+  dimension(sp, toScreen({ x: p.x + d.x * best, y: p.y + d.y * best }), best);
 }
 
 /** The angle at a corner with two walls, in degrees. */
@@ -885,7 +1012,9 @@ function wallTap(pos: Vec, tol: number): void {
   if (hit && hit === wallFrom) {
     stopWall();
   } else {
-    const id = hit ?? addPoint(plan, toWorld(pos.x, pos.y)).id;
+    // a tap on a wall puts the corner exactly on it
+    const at = toWorld(pos.x, pos.y);
+    const id = hit ?? addPoint(plan, wallUnder(at, tol)?.at ?? at).id;
     if (!wallFrom) {
       wallFrom = id;
     } else {
@@ -1015,9 +1144,11 @@ canvas.addEventListener('pointermove', (e) => {
   } else if (drag?.kind === 'point') {
     const p = pointById(plan, drag.id);
     if (p) {
-      p.x = cursor.x;
-      p.y = cursor.y;
-      p.sensor = { x: cursor.x, y: cursor.y };
+      // near another wall, the corner slides along it
+      const to = wallUnder(cursor, e.pointerType === 'touch' ? TOUCH_HIT : 1, drag.id)?.at ?? cursor;
+      p.x = to.x;
+      p.y = to.y;
+      p.sensor = { x: to.x, y: to.y };
       drag.moved = true;
     }
     render();
@@ -1037,7 +1168,7 @@ canvas.addEventListener('pointermove', (e) => {
     drag.x = pos.x;
     drag.y = pos.y;
     render();
-  } else if (wallFrom) {
+  } else if (tool === 'wall') {
     render();
   }
 });

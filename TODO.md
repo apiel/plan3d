@@ -59,19 +59,18 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - ~~the right angle symbol look like there is a pilone in the room~~ done: the angle is only drawn at the selected corner (also while dragging), square at 90°, otherwise an arc and the value.
 
-- give name to room
-
 - ~~we need to be able to place stair case~~ done: stairs tool in the editor (straight flight: width, length, steps, turn, up/down, drag to move), and **Stairs** in the scan (3 marks: both ends of the bottom step's edge, then the top edge; steps counted from the height). Scan marks not tried on the phone. Not yet: L/U-shaped stairs, linking floors.
 
 - ~~ctrl+z ctrl+shift+z should work for undo redo~~ done.
 
-- when adding a wall manually i am not able to set angle to 90degree
-
-
-
 - How can i share a plan with someone...?
 
-- Now i was adding manually a wall in middle of another wall. Would be great to see his distance from the other walls...
+- ~~Now i was adding manually a wall in middle of another wall. Would be great to see his distance from the other walls...~~ done: a corner on another wall shows its distance to both ends of that wall (while drawing, when selected, while dragging); tapping on a wall snaps the corner onto it and dragging slides it along. Not yet: typing those distances, and nothing keeps the corner on the wall when the solver moves things.
 
 
 - Would there be way to kind of suggest door, windows and corner in the scan view? and then we could apply them or not
+
+- when adding a wall manually i am not able to set angle to 90degree
+
+- give name to room
+
