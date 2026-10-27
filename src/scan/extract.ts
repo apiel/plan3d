@@ -14,6 +14,10 @@
 //  5. Points between floor and the wall band, away from the walls, are
 //     grouped into furniture boxes.
 //
+//  6. Doorways and windows nobody marked are found where the phone saw
+//     through a wall: past the wall at hip and chest height is an open door,
+//     past it at chest height only (wall below the sill) is a window.
+//
 // The user can also mark corners, doors and windows with the crosshair while
 // scanning. Three or more marked corners replace the traced outline (each
 // wall between two marks is still fitted to the depth points), and door and
@@ -71,6 +75,7 @@ const SNAP_DEG = 15;
 const FREE_MIN = 3;
 const OCC_MIN = 2; // wall hits that make a cell stop rays
 const STUB = 0.35; // diagonal walls shorter than this are noise (metres)
+const JOG = 0.12; // a step this short between two walls running the same way is noise (often at a doorway's edge), not a chimney breast
 const FLOOR_BAND = 0.1; // points this close to floor or ceiling belong to them
 const WALL_BAND_FROM = 1.5; // metres above the floor where the wall band starts
 const MIN_WALL_SHARE = 0.05; // below this share of all points the upper band is too sparse, fall back to a wide band
@@ -84,11 +89,22 @@ const WALL_FIT_MIN = 20; // fewer points than this and the wall is just the line
 const OPENING_REACH = 0.75; // door/window marks inside the room further than this from every wall are dropped
 const RECESS_MAX = 1.0; // a mark this far behind its wall is a window deep in its recess; further, depth went through the glass
 const OPENING_MIN = 0.3; // narrower openings are a slip of the finger
+// free space seen through a doorway joins the room to the next one through a neck this narrow (half width, metres): cut it
+const NECK = 0.55;
+const NECK_SLACK = 1; // cells
+const SEE_BIN = 0.1; // metres along a wall per bin when looking for openings
+const SEE_AT = 0.12; // a point this close to a wall's line is the wall
+const SEE_BEHIND = 0.25; // a point this far past a wall was seen through it
+const SEE_MIN = 3; // points over a whole opening, per height band, before it counts
+const DOOR_WIDTH = [0.6, 1.5]; // metres: narrower is a gap in the data, wider an open plan, not a door
+const WINDOW_WIDTH = [0.4, 3];
+const LOW_BAND = [0.2, 0.8]; // metres above the floor: under any window sill, open only at a door
+const MID_BAND = [1.1, 1.8]; // metres above the floor: open at a door and at a window
 
 export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomScan | null {
   // First pass finds which way the walls run. Rotating the capture to match
   // makes walls follow the grid, so the second pass has no diagonal staircases.
-  const first = run(frames, marks);
+  const first = run(frames, marks, false);
   if (!first) return null;
   const c = Math.cos(-first.phi);
   const s = Math.sin(-first.phi);
@@ -101,7 +117,7 @@ export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomSca
       camA: o.camA && rotate(o.camA, c, s),
       camB: o.camB && rotate(o.camB, c, s),
     })),
-  });
+  }, true);
   return second ?? first;
 }
 
@@ -125,7 +141,8 @@ interface Pass extends RoomScan {
   phi: number;
 }
 
-function run(frames: Keyframe[], marks: Marks): Pass | null {
+/** One extraction. `cutDoors` cuts off what was seen through doorways; the first pass, which only finds the wall direction, skips it. */
+function run(frames: Keyframe[], marks: Marks, cutDoors: boolean): Pass | null {
   const ys: number[] = [];
   for (const f of frames) for (let i = 1; i < f.points.length; i += 3) ys.push(f.points[i]);
   if (ys.length < 200) return null;
@@ -224,6 +241,7 @@ function run(frames: Keyframe[], marks: Marks): Pass | null {
   for (let i = 0; i < mask.length; i++) mask[i] = free[i] >= FREE_MIN && !occ[i] ? 1 : 0;
   mask = erode(dilate(mask, W, H, 2), W, H, 2);
   mask = fillHoles(mask, W, H);
+  if (cutDoors) mask = cutNecks(mask, W, H, Math.round(NECK / cell), frames.map((f) => iz(f.cam[2]) * W + ix(f.cam[0])));
   mask = largestComponent(mask, W, H);
 
   const loop = traceOutline(mask, W, H);
@@ -253,12 +271,17 @@ function run(frames: Keyframe[], marks: Marks): Pass | null {
   const cy = Math.min(...clean.map((p) => p.y));
   const corners = clean.map((p) => ({ x: p.x - cx, y: p.y - cy }));
   const toPlan = (p: Vec3): Vec => ({ x: p[0] * cos - p[2] * sin - cx, y: p[0] * sin + p[2] * cos - cy });
+  const placed = marks.openings.flatMap(
+    (o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners, o.camA && toPlan(o.camA), o.camB && toPlan(o.camB)) ?? []
+  );
+  // the user's marks win over what the depth suggests
+  const seen = seeThroughOpenings(frames, corners, toPlan, floorY).filter(
+    (d) => !placed.some((m) => m.wall === d.wall && m.from < d.to && d.from < m.to)
+  );
   return {
     corners,
     furniture: boxes.map((b) => snapBoxToWalls({ ...b, x: b.x - cx, y: b.y - cy }, corners)),
-    openings: marks.openings.flatMap(
-      (o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners, o.camA && toPlan(o.camA), o.camB && toPlan(o.camB)) ?? []
-    ),
+    openings: [...placed, ...seen],
     floorY,
     ceilingY,
     phi: snapped.phi,
@@ -396,6 +419,93 @@ function placeOpening(type: 'door' | 'window', a: Vec, b: Vec, corners: Vec[], c
   const from = Math.min(ta, tb);
   const to = Math.max(ta, tb);
   return to - from >= OPENING_MIN ? { type, wall, from, to } : undefined;
+}
+
+/**
+ * Doorways and windows from where the phone saw through the walls. Along each
+ * wall, in bins, points on the wall's line count as wall and points past it
+ * (reached through it, the ray from the phone crossing that wall first) count
+ * as open. Open at hip and chest height is a doorway; wall at hip height and
+ * open at chest height is a window. A closed door or a window whose glass
+ * stops the depth is flush with its wall and cannot be seen this way.
+ */
+function seeThroughOpenings(frames: Keyframe[], corners: Vec[], toPlan: (p: Vec3) => Vec, floorY: number): RoomOpening[] {
+  const n = corners.length;
+  const ccw = polyArea(corners) > 0;
+  const walls = corners.map((a, i) => {
+    const b = corners[(i + 1) % n];
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    // the room is on the left of the walking direction when the area is positive, so out is the right
+    const out = ccw ? { x: u.y, y: -u.x } : { x: -u.y, y: u.x };
+    const bins = Math.max(1, Math.floor(len / SEE_BIN));
+    const counts = () => ({ wall: new Uint16Array(bins), open: new Uint16Array(bins) });
+    return { a, len, u, out, bins, low: counts(), mid: counts() };
+  });
+  const bandOf = (h: number) =>
+    h >= LOW_BAND[0] && h <= LOW_BAND[1] ? 'low' : h >= MID_BAND[0] && h <= MID_BAND[1] ? 'mid' : undefined;
+
+  for (const f of frames) {
+    const cam = toPlan(f.cam);
+    for (let i = 0; i < f.points.length; i += 3) {
+      const band = bandOf(f.points[i + 1] - floorY);
+      if (!band) continue;
+      const p = toPlan([f.points[i], f.points[i + 1], f.points[i + 2]]);
+      // on a wall?
+      let onWall = false;
+      for (const w of walls) {
+        const s = (p.x - w.a.x) * w.u.x + (p.y - w.a.y) * w.u.y;
+        const d = (p.x - w.a.x) * w.out.x + (p.y - w.a.y) * w.out.y;
+        if (s < 0 || s >= w.len || Math.abs(d) > SEE_AT) continue;
+        w[band].wall[Math.min(w.bins - 1, Math.floor(s / SEE_BIN))]++;
+        onWall = true;
+        break;
+      }
+      if (onWall || insidePolygon(p, corners)) continue;
+      // past a wall: the one the line of sight went through
+      const k = firstCrossing(cam, p, corners);
+      if (k < 0) continue;
+      const w = walls[k];
+      if ((p.x - w.a.x) * w.out.x + (p.y - w.a.y) * w.out.y < SEE_BEHIND) continue;
+      const hit = crossLine(cam, p, w.a, corners[(k + 1) % n]);
+      if (!hit) continue;
+      const s = (hit.x - w.a.x) * w.u.x + (hit.y - w.a.y) * w.u.y;
+      if (s < 0 || s >= w.len) continue;
+      w[band].open[Math.min(w.bins - 1, Math.floor(s / SEE_BIN))]++;
+    }
+  }
+
+  // runs of bins seen through more than seen as wall; then the run's totals decide what it is
+  const found: RoomOpening[] = [];
+  walls.forEach((w, k) => {
+    // open at either height: a window has wall under its sill
+    const open = (i: number) =>
+      (w.low.open[i] > 0 && w.low.open[i] >= 2 * w.low.wall[i]) || (w.mid.open[i] > 0 && w.mid.open[i] >= 2 * w.mid.wall[i]);
+    for (let i = 0; i < w.bins; ) {
+      if (!open(i)) {
+        i++;
+        continue;
+      }
+      let j = i;
+      // one bin without evidence inside a run is sparse data, not the end of the opening
+      while (j + 1 < w.bins && (open(j + 1) || (j + 2 < w.bins && open(j + 2)))) j++;
+      const sum = (c: Uint16Array) => c.slice(i, j + 1).reduce((t, v) => t + v, 0);
+      const low = { open: sum(w.low.open), wall: sum(w.low.wall) };
+      const mid = { open: sum(w.mid.open), wall: sum(w.mid.wall) };
+      const type =
+        low.open >= SEE_MIN && low.open >= 2 * low.wall && mid.open >= SEE_MIN
+          ? 'door'
+          : low.wall >= SEE_MIN && low.wall > low.open && mid.open >= SEE_MIN && mid.open >= 2 * mid.wall
+            ? 'window'
+            : undefined;
+      const from = i * SEE_BIN;
+      const to = Math.min(w.len, (j + 1) * SEE_BIN);
+      const [lo, hi] = type === 'door' ? DOOR_WIDTH : WINDOW_WIDTH;
+      if (type && to - from >= lo && to - from <= hi) found.push({ type, wall: k, from, to });
+      i = j + 1;
+    }
+  });
+  return found;
 }
 
 function insidePolygon(p: Vec, poly: Vec[]): boolean {
@@ -621,10 +731,37 @@ function fillHoles(m: Uint8Array, W: number, H: number): Uint8Array {
   return out;
 }
 
-function largestComponent(m: Uint8Array, W: number, H: number): Uint8Array {
+/**
+ * Rays through an open door carve the next room too, joined to this one
+ * through the doorway. Shrinking the free space by `r` cells breaks such
+ * narrow necks; the part where the phone was is kept and grown back inside
+ * the original free space, so the room keeps its shape and loses what was
+ * only seen through the door. A room too narrow to survive the shrinking is
+ * left as it was.
+ */
+function cutNecks(m: Uint8Array, W: number, H: number, r: number, cams: number[]): Uint8Array {
+  const core = erode(m, W, H, r);
+  const { label, sizes } = components(core, W, H);
+  // the core piece holding most camera positions, else the biggest
+  const votes = new Map<number, number>();
+  for (const c of cams) if (label[c]) votes.set(label[c], (votes.get(label[c]) ?? 0) + 1);
+  let keep = 0;
+  for (const [l, v] of votes) if (!keep || v > votes.get(keep)! || (v === votes.get(keep) && sizes[l] > sizes[keep])) keep = l;
+  if (!keep) keep = sizes.reduce((b, sz, l) => (sz > (sizes[b] ?? 0) ? l : b), 0);
+  if (!keep) return m;
+  const piece = new Uint8Array(m.length);
+  for (let i = 0; i < m.length; i++) piece[i] = label[i] === keep ? 1 : 0;
+  // grown back a little further than it was shrunk: the edge along a wall is rough by a cell or two, and
+  // regrowing only as far would shave that roughness and move every wall inwards
+  const grown = dilate(piece, W, H, r + NECK_SLACK);
+  for (let i = 0; i < m.length; i++) grown[i] &= m[i];
+  return grown;
+}
+
+/** 4-connected components: a label per cell (0 for empty) and each label's size. */
+function components(m: Uint8Array, W: number, H: number): { label: Int32Array; sizes: number[] } {
   const label = new Int32Array(m.length);
-  let best = 0;
-  let bestSize = 0;
+  const sizes = [0];
   let next = 0;
   for (let s = 0; s < m.length; s++) {
     if (!m[s] || label[s]) continue;
@@ -645,11 +782,14 @@ function largestComponent(m: Uint8Array, W: number, H: number): Uint8Array {
         }
       }
     }
-    if (size > bestSize) {
-      bestSize = size;
-      best = next;
-    }
+    sizes.push(size);
   }
+  return { label, sizes };
+}
+
+function largestComponent(m: Uint8Array, W: number, H: number): Uint8Array {
+  const { label, sizes } = components(m, W, H);
+  const best = sizes.reduce((b, sz, l) => (sz > sizes[b] ? l : b), 0);
   const out = new Uint8Array(m.length);
   for (let i = 0; i < m.length; i++) out[i] = label[i] === best ? 1 : 0;
   return out;
@@ -807,8 +947,9 @@ function snapToWalls(poly: Vec[]): { corners: Vec[]; phi: number } | undefined {
     return { a, b, axis: 'free', at: 0 };
   });
 
-  // tidy: drop short diagonal stubs (noise at corners), and merge neighbouring
-  // walls that snapped to the same axis (small jogs)
+  // tidy: drop short diagonal stubs (noise at corners) and tiny steps between
+  // walls running the same way, then merge neighbouring walls that snapped to
+  // the same axis
   const len = (side: Side) => Math.hypot(side.b.x - side.a.x, side.b.y - side.a.y);
   let changed = true;
   while (changed && sides.length > 3) {
@@ -816,6 +957,16 @@ function snapToWalls(poly: Vec[]): { corners: Vec[]; phi: number } | undefined {
     const stub = sides.findIndex((side) => side.axis === 'free' && len(side) < STUB);
     if (stub >= 0) {
       sides.splice(stub, 1);
+      changed = true;
+      continue;
+    }
+    const jog = sides.findIndex((side, i) => {
+      const prev = sides[(i + sides.length - 1) % sides.length];
+      const next = sides[(i + 1) % sides.length];
+      return side.axis !== 'free' && len(side) < JOG && prev.axis === next.axis && prev.axis !== 'free' && prev.axis !== side.axis;
+    });
+    if (jog >= 0) {
+      sides.splice(jog, 1);
       changed = true;
       continue;
     }

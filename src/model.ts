@@ -15,13 +15,27 @@ export interface PlanPoint extends Vec {
 export interface Wall {
   a: string;
   b: string;
+  /** Metres, growing outwards from the line (the line is the face inside the room). */
+  thickness?: number;
 }
+
+export const DEFAULT_THICKNESS = 0.1;
 
 export type Constraint =
   /** Measured distance between two points, in metres. */
   | { type: 'distance'; a: string; b: string; value: number }
   /** The angle at corner `b` between `a` and `c` is 90 degrees. */
-  | { type: 'rightAngle'; a: string; b: string; c: string };
+  | { type: 'rightAngle'; a: string; b: string; c: string }
+  /** The angle at corner `b` between `a` and `c`, in degrees (other than 90). */
+  | { type: 'angle'; a: string; b: string; c: string; value: number }
+  /** Wall a-b runs parallel to wall c-d. */
+  | { type: 'parallel'; a: string; b: string; c: string; d: string }
+  /** Wall a-b is as long as wall c-d. */
+  | { type: 'equal'; a: string; b: string; c: string; d: string };
+
+/** The point ids a constraint ties together. */
+export const constraintIds = (c: Constraint): string[] =>
+  c.type === 'distance' ? [c.a, c.b] : c.type === 'rightAngle' || c.type === 'angle' ? [c.a, c.b, c.c] : [c.a, c.b, c.c, c.d];
 
 /** A box standing on the floor: min corner and size in metres, height above the floor. */
 export interface Furniture {
@@ -55,6 +69,17 @@ export interface Join {
   b: string;
 }
 
+/** A straight flight of stairs: centre and size in metres, turned by `angle` degrees; it goes up towards +length. */
+export interface Stair {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  length: number;
+  angle: number;
+  steps: number;
+}
+
 export interface Plan {
   points: PlanPoint[];
   walls: Wall[];
@@ -62,9 +87,10 @@ export interface Plan {
   furniture: Furniture[];
   openings: Opening[];
   joins: Join[];
+  stairs: Stair[];
 }
 
-export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [] });
+export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [] });
 
 export const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -73,6 +99,9 @@ export const pointById = (plan: Plan, id: string): PlanPoint | undefined =>
 
 export const sameWall = (w: Wall, a: string, b: string): boolean =>
   (w.a === a && w.b === b) || (w.a === b && w.b === a);
+
+export const wallThickness = (plan: Plan, a: string, b: string): number =>
+  plan.walls.find((w) => sameWall(w, a, b))?.thickness ?? DEFAULT_THICKNESS;
 
 export function findDistance(plan: Plan, a: string, b: string): number | undefined {
   for (const c of plan.constraints) {
@@ -109,21 +138,63 @@ export function findRightAngle(plan: Plan, id: string): boolean {
   return plan.constraints.some((c) => c.type === 'rightAngle' && c.b === id);
 }
 
-export function toggleRightAngle(plan: Plan, id: string): void {
-  if (findRightAngle(plan, id)) {
-    plan.constraints = plan.constraints.filter((c) => !(c.type === 'rightAngle' && c.b === id));
-    return;
+/** The angle a corner is held at, in degrees: 90 for a right angle, undefined when free. */
+export function findAngle(plan: Plan, id: string): number | undefined {
+  for (const c of plan.constraints) {
+    if (c.b !== id) continue;
+    if (c.type === 'rightAngle') return 90;
+    if (c.type === 'angle') return c.value;
   }
+  return undefined;
+}
+
+/** Holds a corner at an angle in degrees (90 becomes a right angle), or frees it with undefined. */
+export function setAngle(plan: Plan, id: string, deg: number | undefined): void {
+  plan.constraints = plan.constraints.filter((c) => !((c.type === 'rightAngle' || c.type === 'angle') && c.b === id));
   const n = cornerNeighbours(plan, id);
-  if (n) plan.constraints.push({ type: 'rightAngle', a: n[0], b: id, c: n[1] });
+  if (deg === undefined || !n) return;
+  if (Math.abs(deg - 90) < 1e-9) plan.constraints.push({ type: 'rightAngle', a: n[0], b: id, c: n[1] });
+  else plan.constraints.push({ type: 'angle', a: n[0], b: id, c: n[1], value: deg });
+}
+
+export function toggleRightAngle(plan: Plan, id: string): void {
+  setAngle(plan, id, findRightAngle(plan, id) ? undefined : 90);
+}
+
+/** Parallel / equal-length ties between two walls. */
+export type WallTie = 'parallel' | 'equal';
+
+const tieMatches = (c: Constraint, a: string, b: string): boolean =>
+  (c.type === 'parallel' || c.type === 'equal') &&
+  (((c.a === a && c.b === b) || (c.a === b && c.b === a)) || ((c.c === a && c.d === b) || (c.c === b && c.d === a)));
+
+/** The other walls tied to wall a-b, with the kind of tie. */
+export function wallTies(plan: Plan, a: string, b: string): { type: WallTie; a: string; b: string }[] {
+  const out: { type: WallTie; a: string; b: string }[] = [];
+  for (const c of plan.constraints) {
+    if (!tieMatches(c, a, b) || (c.type !== 'parallel' && c.type !== 'equal')) continue;
+    const first = (c.a === a && c.b === b) || (c.a === b && c.b === a);
+    out.push({ type: c.type, a: first ? c.c : c.a, b: first ? c.d : c.b });
+  }
+  return out;
+}
+
+/** Ties wall a-b to wall c-d (parallel or same length); a second identical tie is not added. */
+export function addWallTie(plan: Plan, type: WallTie, a: string, b: string, c: string, d: string): void {
+  if (wallTies(plan, a, b).some((t) => t.type === type && ((t.a === c && t.b === d) || (t.a === d && t.b === c)))) return;
+  plan.constraints.push({ type, a, b, c, d });
+}
+
+export function removeWallTie(plan: Plan, type: WallTie, a: string, b: string, c: string, d: string): void {
+  plan.constraints = plan.constraints.filter(
+    (x) => !(x.type === type && tieMatches(x, a, b) && tieMatches(x, c, d))
+  );
 }
 
 export function removePoint(plan: Plan, id: string): void {
   plan.points = plan.points.filter((p) => p.id !== id);
   plan.walls = plan.walls.filter((w) => w.a !== id && w.b !== id);
-  plan.constraints = plan.constraints.filter((c) =>
-    c.type === 'distance' ? c.a !== id && c.b !== id : c.a !== id && c.b !== id && c.c !== id
-  );
+  plan.constraints = plan.constraints.filter((c) => !constraintIds(c).includes(id));
   plan.openings = plan.openings.filter((o) => o.a !== id && o.b !== id);
 }
 
@@ -152,6 +223,7 @@ export function parse(text: string): Plan {
     furniture: Array.isArray(raw.furniture) ? raw.furniture : [],
     openings: Array.isArray(raw.openings) ? raw.openings : [],
     joins: Array.isArray(raw.joins) ? raw.joins : [],
+    stairs: Array.isArray(raw.stairs) ? raw.stairs : [],
   };
 }
 

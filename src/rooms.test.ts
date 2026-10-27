@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { Plan, Vec, newId, roomFromCorners, setDistance } from './model';
+import { DEFAULT_THICKNESS, Plan, Vec, newId, roomFromCorners, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, joinDoors, openingFrame, roomArea, roomIdsOf, roomComponents } from './rooms';
+import { applyJoins, deleteRoom, insideRoom, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -27,6 +27,15 @@ const centre = (plan: Plan, id: string): Vec => {
   return { x: (f.p1.x + f.p2.x) / 2, y: (f.p1.y + f.p2.y) / 2 };
 };
 
+/** Where door `b` should be: on `a`, one wall thickness out of a's room. */
+const expectJoined = (plan: Plan, a: string, b: string, t = DEFAULT_THICKNESS): void => {
+  const n = openingFrame(plan, plan.openings.find((o) => o.id === a)!)!.n;
+  const ca = centre(plan, a);
+  const cb = centre(plan, b);
+  expect(cb.x).toBeCloseTo(ca.x - n.x * t, 6);
+  expect(cb.y).toBeCloseTo(ca.y - n.y * t, 6);
+};
+
 const roomCentre = (plan: Plan, ids: string[]): Vec => {
   const ps = ids.map((id) => plan.points.find((p) => p.id === id)!);
   return { x: ps.reduce((s, p) => s + p.x, 0) / ps.length, y: ps.reduce((s, p) => s + p.y, 0) / ps.length };
@@ -40,10 +49,7 @@ describe('joining rooms through a door', () => {
     const da = door(plan, a, 1, 1); // right wall of A
     const db = door(plan, b, 3, 1); // left wall of B, drawn on the other side of the map
     expect(joinDoors(plan, da, db)).toBeNull();
-    const ca = centre(plan, da);
-    const cb = centre(plan, db);
-    expect(cb.x).toBeCloseTo(ca.x, 6);
-    expect(cb.y).toBeCloseTo(ca.y, 6);
+    expectJoined(plan, da, db);
     // B lies to the right of A's right wall, A did not move
     expect(roomCentre(plan, b).x).toBeGreaterThan(4);
     expect(plan.points.find((p) => p.id === a[0])).toMatchObject({ x: 0, y: 0 });
@@ -59,8 +65,7 @@ describe('joining rooms through a door', () => {
     const da = door(plan, a, 1, 1);
     const db = door(plan, b, 0, 1); // top wall of B: B must be turned a quarter turn
     expect(joinDoors(plan, da, db)).toBeNull();
-    expect(centre(plan, db).x).toBeCloseTo(centre(plan, da).x, 6);
-    expect(centre(plan, db).y).toBeCloseTo(centre(plan, da).y, 6);
+    expectJoined(plan, da, db);
     expect(roomCentre(plan, b).x).toBeGreaterThan(4);
     const [p0, p1] = [b[0], b[1]].map((id) => plan.points.find((p) => p.id === id)!);
     expect(Math.abs(p0.x - p1.x)).toBeLessThan(1e-6); // the top wall is now vertical
@@ -76,8 +81,23 @@ describe('joining rooms through a door', () => {
     setDistance(plan, b[0], b[1], 4); // B's top wall is really 4 m, not 3
     apply(plan, solve(plan));
     applyJoins(plan);
-    expect(centre(plan, db).x).toBeCloseTo(centre(plan, da).x, 6);
-    expect(centre(plan, db).y).toBeCloseTo(centre(plan, da).y, 6);
+    expectJoined(plan, da, db);
+  });
+
+  it('leaves a gap of the wall thickness, shared by both sides of the wall', () => {
+    const plan = roomFromCorners([]);
+    const a = square(plan, 0, 0, 4, 3);
+    const b = square(plan, 20, 0, 3, 3);
+    const da = door(plan, a, 1, 1);
+    const db = door(plan, b, 3, 1);
+    plan.walls[1].thickness = 0.3; // A's right wall
+    joinDoors(plan, da, db);
+    expectJoined(plan, da, db, 0.3);
+    expect(plan.walls[7].thickness).toBe(0.3); // B's left wall took it
+    setWallThickness(plan, b[3], b[0], 0.2); // changing B's side changes A's too
+    expect(plan.walls[1].thickness).toBe(0.2);
+    applyJoins(plan);
+    expectJoined(plan, da, db, 0.2);
   });
 
   it('chains a third room and refuses loops, doors in one room and joined doors', () => {
@@ -92,12 +112,32 @@ describe('joining rooms through a door', () => {
     const a2 = door(plan, a, 2, 1);
     expect(joinDoors(plan, a1, b3)).toBeNull();
     expect(joinDoors(plan, b1, c3)).toBeNull();
-    expect(centre(plan, c3).x).toBeCloseTo(centre(plan, b1).x, 6);
+    expectJoined(plan, b1, c3);
     expect(roomCentre(plan, c).x).toBeGreaterThan(roomCentre(plan, b).x);
     expect(joinDoors(plan, a2, c3)).toMatch(/already/); // c3 is taken
     expect(joinDoors(plan, a1, a2)).toMatch(/same room/);
     const c1 = door(plan, c, 1, 1);
     expect(joinDoors(plan, a2, c1)).toMatch(/already joined/); // would close a loop
+  });
+});
+
+describe('wall outline', () => {
+  it('pushes every wall out by its thickness, mitred at the corners', () => {
+    const plan = roomFromCorners([]);
+    const a = square(plan, 0, 0, 4, 3);
+    plan.walls[0].thickness = 0.3; // top wall
+    const o = roomOutline(plan, roomIdsOf(plan, a[0]))!;
+    const xs = o.outer.map((p) => p.x);
+    const ys = o.outer.map((p) => p.y);
+    expect(Math.min(...ys)).toBeCloseTo(-0.3);
+    expect(Math.max(...ys)).toBeCloseTo(3.1);
+    expect(Math.min(...xs)).toBeCloseTo(-0.1);
+    expect(Math.max(...xs)).toBeCloseTo(4.1);
+    // outwards is really out of the room, whichever way the corners were listed
+    const reversed = roomFromCorners([]);
+    const r = square(reversed, 0, 0, 4, 3).reverse();
+    const ids = roomIdsOf(reversed, r[0]);
+    for (const p of roomOutline(reversed, ids)!.outer) expect(insideRoom(reversed, ids, p)).toBe(false);
   });
 });
 

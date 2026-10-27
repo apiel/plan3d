@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { Plan, dist, roomFromCorners, setDistance, toggleRightAngle } from './model';
-import { apply, solve } from './solver';
+import { Plan, addWallTie, dist, roomFromCorners, setAngle, setDistance, toggleRightAngle } from './model';
+import { apply, solve, wallKey } from './solver';
 
 // 4 x 3 m room as the capture sees it: every corner a few cm off.
 const noisyRoom = (): Plan =>
@@ -142,5 +142,49 @@ describe('solver', () => {
     setDistance(plan, plan.points[0].id, plan.points[2].id, 9.0); // impossible
     const result = solve(plan);
     expect(result.conflicts.length).toBeGreaterThan(0);
+  });
+
+  it('holds a corner at a typed angle', () => {
+    const plan = noisyRoom();
+    setAngle(plan, plan.points[1].id, 100);
+    apply(plan, solve(plan));
+    expect(angleDeg(plan, 1)).toBeCloseTo(100, 0);
+  });
+
+  it('makes two walls parallel', () => {
+    const plan = noisyRoom();
+    const [p0, p1, p2, p3] = plan.points.map((p) => p.id);
+    addWallTie(plan, 'parallel', p0, p1, p2, p3);
+    apply(plan, solve(plan));
+    const [a, b, c, d] = plan.points;
+    const cross = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x);
+    expect(Math.abs(cross) / (dist(a, b) * dist(c, d))).toBeLessThan(0.01); // under half a degree, like a right angle
+  });
+
+  it('gives two walls the same length, and a measurement on one sets the other', () => {
+    const plan = noisyRoom();
+    const [p0, p1, p2, p3] = plan.points.map((p) => p.id);
+    addWallTie(plan, 'equal', p0, p1, p2, p3);
+    setDistance(plan, p0, p1, 4.3);
+    apply(plan, solve(plan));
+    expect(len(plan, 0)).toBeCloseTo(4.3, 2);
+    expect(len(plan, 2)).toBeCloseTo(4.3, 2);
+  });
+
+  it('knows how uncertain each wall still is', () => {
+    const plan = noisyRoom();
+    const [p0, p1, p2] = plan.points.map((p) => p.id);
+    const before = solve(plan).wallSigma;
+    // nothing measured: the room's scale is unknown, every wall is very uncertain
+    expect(before.get(wallKey(p0, p1))!).toBeGreaterThan(0.5);
+    setDistance(plan, p0, p1, 4.0);
+    const after = solve(plan).wallSigma;
+    // the measured wall is known to the tape's accuracy, the others to the capture's
+    expect(after.get(wallKey(p0, p1))!).toBeLessThan(0.005);
+    expect(after.get(wallKey(p1, p2))!).toBeGreaterThan(0.02);
+    expect(after.get(wallKey(p1, p2))!).toBeLessThan(0.2);
+    // measuring the second wall pins it too
+    setDistance(plan, p1, p2, 3.0);
+    expect(solve(plan).wallSigma.get(wallKey(p1, p2))!).toBeLessThan(0.005);
   });
 });

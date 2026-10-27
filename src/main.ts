@@ -2,6 +2,7 @@ import './styles.css';
 import {
   Opening,
   Plan,
+  Stair,
   Vec,
   addPoint,
   clearDistance,
@@ -16,19 +17,27 @@ import {
   removePoint,
   serialize,
   setDistance,
+  WallTie,
+  addWallTie,
+  findAngle,
+  removeWallTie,
+  setAngle,
   toggleRightAngle,
+  wallThickness,
+  wallTies,
 } from './model';
 import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, insideRoom, joinDoors, joinOf, openingFrame, pruneJoins, roomArea, roomComponents, roomIdsOf, roomLoop, unjoin } from './rooms';
-import { SolveResult, apply, solve } from './solver';
+import { applyJoins, deleteRoom, insideRoom, joinDoors, joinOf, openingFrame, pruneJoins, roomArea, roomComponents, roomIdsOf, roomLoop, roomOutline, setWallThickness, unjoin } from './rooms';
+import { SolveResult, apply, solve, wallKey } from './solver';
+import { insideStair, newStair, stairAxes, stairCorners, stairPoint, stairTreads } from './stairs';
 import { load, save } from './storage';
 
 const POINT_HIT = 12; // px, with a mouse
 const WALL_HIT = 8; // px, with a mouse
 const TOUCH_HIT = 2.2; // fingers are less precise: hit areas grow by this much
-const OPENING_PX = 7; // drawn wall thickness at a door or window
+const MIN_OPENING_PX = 5; // an opening is at least this deep on screen, even through a thin wall
 const NEW_WIDTH = { door: 0.8, window: 1.0 }; // metres, for doors and windows added by hand
 
 type Selection =
@@ -36,10 +45,12 @@ type Selection =
   | { kind: 'wall'; a: string; b: string }
   | { kind: 'opening'; id: string }
   | { kind: 'room'; id: string }
+  | { kind: 'stair'; id: string }
   | null;
-type Tool = 'wall' | 'door' | 'window' | null;
+type Tool = 'wall' | 'door' | 'window' | 'stair' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
+  | { kind: 'stair'; id: string; from: Vec; start: Vec; moved: boolean }
   | { kind: 'pan'; x: number; y: number; moved: boolean }
   | { kind: 'pinch'; d: number; mid: Vec }
   | null;
@@ -63,6 +74,8 @@ let lastSolve: SolveResult | null = null;
 let labelBoxes: { a: string; b: string; x: number; y: number; w: number; h: number }[] = [];
 /** Door being joined: the next door tapped, in another room, is moved onto it. */
 let joinFrom: string | null = null;
+/** Wall waiting for a second wall to be tapped, to make them parallel or the same length. */
+let tiePick: { type: WallTie; a: string; b: string } | null = null;
 /** Fingers or the mouse currently down, for pinch zoom. */
 const pointers = new Map<number, Vec>();
 
@@ -243,26 +256,34 @@ function drawOpening(o: Opening): void {
   const s2 = toScreen(g.p2);
   const selected = (selection?.kind === 'opening' && selection.id === o.id) || joinFrom === o.id;
   const color = selected ? '#60a5fa' : joinOf(plan, o.id) ? '#c084fc' : '#e6e8eb';
-  const t = OPENING_PX / 2;
   const n = g.n; // screen and plan axes point the same way, so world directions work on screen
+  // the opening goes through the wall: from its face inside the room, outwards by the wall thickness
+  const depth = Math.max(wallThickness(plan, o.a, o.b) * view.scale, MIN_OPENING_PX);
+  const out = (p: Vec, k: number): Vec => ({ x: p.x - n.x * k, y: p.y - n.y * k });
 
-  // cut the wall
+  // cut the wall and its band
+  ctx.fillStyle = '#14161a';
+  ctx.beginPath();
+  for (const [i, v] of [out(s1, -1.5), out(s2, -1.5), out(s2, depth + 1.5), out(s1, depth + 1.5)].entries()) {
+    if (i) ctx.lineTo(v.x, v.y);
+    else ctx.moveTo(v.x, v.y);
+  }
+  ctx.closePath();
+  ctx.fill();
+
   ctx.lineCap = 'butt';
-  ctx.strokeStyle = '#14161a';
-  ctx.lineWidth = OPENING_PX + 2;
-  line(s1, s2);
-
   ctx.strokeStyle = color;
   ctx.lineWidth = selected ? 2.5 : 1.5;
   // jambs
-  for (const s of [s1, s2]) line({ x: s.x - n.x * t, y: s.y - n.y * t }, { x: s.x + n.x * t, y: s.y + n.y * t });
+  for (const s of [s1, s2]) line(s, out(s, depth));
 
   if (o.type === 'window') {
-    for (const k of [-t, 0, t]) line({ x: s1.x + n.x * k, y: s1.y + n.y * k }, { x: s2.x + n.x * k, y: s2.y + n.y * k });
+    for (const k of [0, depth / 2, depth]) line(out(s1, k), out(s2, k));
     return;
   }
   // door: leaf hinged at one end, open into the room (or out of it), and its swing
-  const hinge = o.hingeAtB ? s2 : s1;
+  const hingeAt = o.hingeAtB ? s2 : s1;
+  const hinge = o.outward ? out(hingeAt, depth) : hingeAt;
   const closed = o.hingeAtB ? { x: -g.u.x, y: -g.u.y } : g.u; // from the hinge along the closed door
   const open = o.outward ? { x: -n.x, y: -n.y } : n;
   const r = o.width * view.scale;
@@ -294,6 +315,76 @@ function drawOpeningLabel(o: Opening): void {
   label(`${m ? '' : '~'}${(o.width * 100).toFixed(0)}`, at, m ? '#4ade80' : '#c3c9d2', m);
 }
 
+/** Stairs the way plans draw them: outline, one line per step, an arrow going up from a dot at the bottom. */
+function drawStair(st: Stair): void {
+  const selected = selection?.kind === 'stair' && selection.id === st.id;
+  const color = selected ? '#60a5fa' : '#c3c9d2';
+  const corners = stairCorners(st).map(toScreen);
+  ctx.fillStyle = '#1d2129';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = selected ? 2.5 : 1.5;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  for (const [a, b] of stairTreads(st)) line(toScreen(a), toScreen(b));
+  // walking line up the middle
+  const bottom = toScreen(stairPoint(st, -st.length / 2 + 0.15, 0));
+  const top = toScreen(stairPoint(st, st.length / 2 - 0.05, 0));
+  ctx.lineWidth = selected ? 2 : 1.5;
+  line(bottom, top);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(bottom.x, bottom.y, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+  const { u, v } = stairAxes(st);
+  const head = 9;
+  ctx.beginPath();
+  ctx.moveTo(top.x, top.y);
+  ctx.lineTo(top.x - (u.x - v.x * 0.6) * head, top.y - (u.y - v.y * 0.6) * head);
+  ctx.lineTo(top.x - (u.x + v.x * 0.6) * head, top.y - (u.y + v.y * 0.6) * head);
+  ctx.closePath();
+  ctx.fill();
+  if (selected) {
+    label(`${(st.width * 100).toFixed(0)} cm`, toScreen(stairPoint(st, -st.length / 2 - 0.25, 0)), color, false);
+    label(`${(st.length * 100).toFixed(0)} cm`, toScreen(stairPoint(st, 0, st.width / 2 + 0.25)), color, false);
+  }
+}
+
+/** How uncertain a wall's length still is, in metres, from the last solve. */
+const wallSigma = (a: string, b: string): number | undefined => lastSolve?.wallSigma.get(wallKey(a, b));
+
+/** In each room, the unmeasured wall whose length is least certain: the one worth measuring next. */
+function nextToMeasure(): Set<string> {
+  const out = new Set<string>();
+  for (const ids of roomComponents(plan)) {
+    const set = new Set(ids);
+    let best: string | undefined;
+    let bestSigma = 0.01; // below 1 cm there is nothing worth measuring
+    for (const w of plan.walls) {
+      if (!set.has(w.a) || findDistance(plan, w.a, w.b) !== undefined) continue;
+      const sg = wallSigma(w.a, w.b) ?? 0;
+      if (sg > bestSigma) {
+        bestSigma = sg;
+        best = wallKey(w.a, w.b);
+      }
+    }
+    if (best) out.add(best);
+  }
+  return out;
+}
+
+/** "± 4 cm", or a hint when the room has no measurement yet and its scale is unknown. */
+function sigmaText(a: string, b: string): string {
+  const sg = wallSigma(a, b);
+  if (sg === undefined) return '';
+  if (sg > 0.5) return 'no measurement in this room yet';
+  return `± ${Math.max(sg * 100, 0.1).toFixed(sg < 0.01 ? 1 : 0)} cm`;
+}
+
 function render(): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -316,6 +407,45 @@ function render(): void {
     }
   }
 
+  // wall thickness: a band outside the line of each room, which is the face inside the room
+  ctx.fillStyle = '#2f3540';
+  for (const ids of roomComponents(plan)) {
+    const set = new Set(ids);
+    const outline = roomOutline(plan, set);
+    if (outline) {
+      ctx.beginPath();
+      for (const ring of [outline.outer, outline.inner]) {
+        ring.forEach((v, i) => {
+          const sv = toScreen(v);
+          if (i) ctx.lineTo(sv.x, sv.y);
+          else ctx.moveTo(sv.x, sv.y);
+        });
+        ctx.closePath();
+      }
+      ctx.fill('evenodd');
+      continue;
+    }
+    // not a simple loop: a plain strip along each wall, on the side away from the room
+    for (const w of plan.walls) {
+      const a = pointById(plan, w.a);
+      const b = pointById(plan, w.b);
+      if (!a || !b || !set.has(w.a)) continue;
+      const u = unit(sub(b, a));
+      const t = wallThickness(plan, w.a, w.b);
+      let n = { x: -u.y, y: u.x };
+      if (insideRoom(plan, set, { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
+      const quad = [a, b, { x: b.x + n.x * t, y: b.y + n.y * t }, { x: a.x + n.x * t, y: a.y + n.y * t }].map(toScreen);
+      ctx.beginPath();
+      quad.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  const next = nextToMeasure();
+  const tied = selection?.kind === 'wall' ? wallTies(plan, selection.a, selection.b) : [];
+  const isTied = (a: string, b: string) => tied.find((t) => (t.a === a && t.b === b) || (t.a === b && t.b === a));
+
   // walls
   ctx.lineCap = 'round';
   for (const wall of plan.walls) {
@@ -324,18 +454,22 @@ function render(): void {
     if (!a || !b) continue;
     const measured = findDistance(plan, wall.a, wall.b) !== undefined;
     const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || (selection?.kind === 'room' && roomIdsOf(plan, selection.id).has(wall.a));
-    ctx.lineWidth = selected ? 5 : measured ? 4 : 3;
-    ctx.strokeStyle = selected ? '#60a5fa' : measured ? '#4ade80' : '#9aa3b0';
-    ctx.setLineDash(measured ? [] : [8, 5]);
+    const tie = isTied(wall.a, wall.b);
+    ctx.lineWidth = selected || tie ? 5 : measured ? 4 : 3;
+    ctx.strokeStyle = selected ? '#60a5fa' : tie ? '#c084fc' : measured ? '#4ade80' : next.has(wallKey(wall.a, wall.b)) ? '#fbbf24' : '#9aa3b0';
+    ctx.setLineDash(measured || tie ? [] : [8, 5]);
     line(toScreen(a), toScreen(b));
     ctx.setLineDash([]);
+    if (tie) label(tie.type === 'parallel' ? '∥' : '=', toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }), '#c084fc', true);
   }
 
+  for (const st of plan.stairs) drawStair(st);
   for (const o of plan.openings) drawOpening(o);
   for (const o of plan.openings) drawOpeningLabel(o);
 
   // wall lengths, over the openings, and remembered for tapping
   labelBoxes = [];
+  const rooms = roomComponents(plan).map((ids) => new Set(ids));
   for (const wall of plan.walls) {
     const a = pointById(plan, wall.a);
     const b = pointById(plan, wall.b);
@@ -347,9 +481,16 @@ function render(): void {
     let n = { x: -u.y, y: u.x };
     if (insideRoom(plan, roomIdsOf(plan, wall.a), { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
     ctx.font = `${measured ? 'bold ' : ''}13px system-ui, sans-serif`;
-    const away = Math.abs(n.x) * (ctx.measureText(text).width / 2 + 10) + Math.abs(n.y) * 15;
-    const at = { x: (toScreen(a).x + toScreen(b).x) / 2 + n.x * away, y: (toScreen(a).y + toScreen(b).y) / 2 + n.y * away };
-    const size = label(text, at, measured ? '#4ade80' : '#c3c9d2', measured);
+    if (dist(toScreen(a), toScreen(b)) < ctx.measureText(text).width + 16) continue; // zoomed out too far to fit: zoom in to see it
+    const away = Math.abs(n.x) * (ctx.measureText(text).width / 2 + 10) + Math.abs(n.y) * 15 + wallThickness(plan, wall.a, wall.b) * view.scale;
+    let at = { x: (toScreen(a).x + toScreen(b).x) / 2 + n.x * away, y: (toScreen(a).y + toScreen(b).y) / 2 + n.y * away };
+    // a wall shared with a neighbouring room: outside is the neighbour's floor, so the label goes on this room's side
+    const atWorld = toWorld(at.x, at.y);
+    if (rooms.some((ids) => !ids.has(wall.a) && insideRoom(plan, ids, atWorld))) {
+      const back = away - wallThickness(plan, wall.a, wall.b) * view.scale;
+      at = { x: (toScreen(a).x + toScreen(b).x) / 2 - n.x * back, y: (toScreen(a).y + toScreen(b).y) / 2 - n.y * back };
+    }
+    const size = label(text, at, measured ? '#4ade80' : next.has(wallKey(wall.a, wall.b)) ? '#fbbf24' : '#c3c9d2', measured);
     labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
@@ -364,7 +505,8 @@ function render(): void {
     const uc = unit(sub(toScreen(wc), sp));
     const deg = (Math.acos(Math.max(-1, Math.min(1, ua.x * uc.x + ua.y * uc.y))) * 180) / Math.PI;
     const square = findRightAngle(plan, corner.id);
-    ctx.strokeStyle = square ? '#4ade80' : '#60a5fa';
+    const held = findAngle(plan, corner.id) !== undefined;
+    ctx.strokeStyle = held ? '#4ade80' : '#60a5fa';
     ctx.lineWidth = 2;
     ctx.lineCap = 'butt';
     const s = 14;
@@ -383,7 +525,7 @@ function render(): void {
     ctx.stroke();
     const bis = unit({ x: ua.x + uc.x, y: ua.y + uc.y });
     const reach = 34;
-    label(`${deg.toFixed(deg % 1 < 0.05 || deg % 1 > 0.95 ? 0 : 1)}°`, { x: sp.x + bis.x * reach, y: sp.y + bis.y * reach }, square ? '#4ade80' : '#60a5fa', square);
+    label(`${deg.toFixed(deg % 1 < 0.05 || deg % 1 > 0.95 ? 0 : 1)}°`, { x: sp.x + bis.x * reach, y: sp.y + bis.y * reach }, held ? '#4ade80' : '#60a5fa', held);
   }
 
   // the wall being drawn, from its first corner to the finger
@@ -410,6 +552,20 @@ function render(): void {
   }
 }
 
+/** The angle at a corner with two walls, in degrees. */
+function cornerAngle(id: string): number | undefined {
+  const p = pointById(plan, id);
+  const n = cornerNeighbours(plan, id);
+  const a = n && pointById(plan, n[0]);
+  const c = n && pointById(plan, n[1]);
+  if (!p || !a || !c) return undefined;
+  const ux = a.x - p.x;
+  const uy = a.y - p.y;
+  const wx = c.x - p.x;
+  const wy = c.y - p.y;
+  return (Math.atan2(Math.abs(ux * wy - uy * wx), ux * wx + uy * wy) * 180) / Math.PI;
+}
+
 const sub = (a: Vec, b: Vec): Vec => ({ x: a.x - b.x, y: a.y - b.y });
 const unit = (v: Vec): Vec => {
   const l = Math.hypot(v.x, v.y) || 1;
@@ -427,20 +583,29 @@ const head = (title: string, detail = '') =>
  * first: on a phone the keyboard would close, the sheet would slide down,
  * and the tap would land on nothing.
  */
-function numberRow(value: number | undefined, placeholder: number, onSet: (m: number) => void): string {
+function numberRow(
+  value: number | undefined,
+  placeholder: number,
+  onSet: (m: number) => void,
+  opts: { id?: string; label?: string; focus?: boolean; unit?: string; factor?: number } = {}
+): string {
+  const id = opts.id ?? 'num';
+  const factor = opts.factor ?? 100; // shown value per stored unit: cm per metre by default
   queueMicrotask(() => {
-    const input = el<HTMLInputElement>('num');
-    el('numForm').onsubmit = (e) => {
+    const input = el<HTMLInputElement>(id);
+    el(`${id}Form`).onsubmit = (e) => {
       e.preventDefault();
-      const cm = parseFloat(input.value.replace(',', '.'));
-      if (cm > 0) onSet(cm / 100);
+      const shown = parseFloat(input.value.replace(',', '.'));
+      if (shown > 0) onSet(shown / factor);
     };
-    el('numOk').onmousedown = (e) => e.preventDefault();
-    el('numOk').onpointerdown = (e) => e.preventDefault();
-    input.focus();
-    input.select();
+    el(`${id}Ok`).onmousedown = (e) => e.preventDefault();
+    el(`${id}Ok`).onpointerdown = (e) => e.preventDefault();
+    if (opts.focus !== false) {
+      input.focus();
+      input.select();
+    }
   });
-  return `<form id="numForm" class="row"><label class="num"><input id="num" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="${placeholder.toFixed(0)}" value="${value !== undefined ? +(value * 100).toFixed(1) : ''}"> cm</label><button id="numOk" class="primary">OK</button></form>`;
+  return `<form id="${id}Form" class="row"><label class="num">${opts.label ? `<span class="muted">${opts.label}</span>` : ''}<input id="${id}" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="${placeholder.toFixed(0)}" value="${value !== undefined ? +(value * factor).toFixed(1) : ''}"> ${opts.unit ?? 'cm'}</label><button id="${id}Ok" class="primary">OK</button></form>`;
 }
 
 function renderUi(): void {
@@ -452,7 +617,7 @@ function renderUi(): void {
   }
   el('empty').hidden = plan.points.length > 0 || tool !== null;
   el('scan').hidden = !sheet.hidden || tool !== null;
-  for (const t of ['wall', 'door', 'window'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
+  for (const t of ['wall', 'door', 'window', 'stair'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
 
   // one line at the top: what the tool expects, or measurements that disagree
   const conflicts = (lastSolve?.conflicts ?? []).filter((c) => c.constraint.type === 'distance');
@@ -463,7 +628,9 @@ function renderUi(): void {
       ? wallFrom
         ? 'Tap the next corner. Tap the last corner again, or an existing corner, to stop.'
         : 'Tap where the wall starts (tap a corner to start from it).'
-      : tool
+      : tool === 'stair'
+        ? 'Tap where the stairs go. Drag them afterwards to move them.'
+        : tool
         ? `Tap the wall where the ${tool} goes.`
         : conflicts.length
           ? `Measurements disagree: ${conflicts
@@ -482,13 +649,51 @@ function renderSheet(): void {
     if (!a || !b) return closeSheet();
     const measured = findDistance(plan, sel.a, sel.b);
     sheet.innerHTML =
-      head('Wall length', measured !== undefined ? '<span class="ok">measured</span>' : `estimated ${(dist(a, b) * 100).toFixed(0)} cm`) +
+      head(
+        'Wall length',
+        measured !== undefined
+          ? '<span class="ok">measured</span>'
+          : `estimated ${(dist(a, b) * 100).toFixed(0)} cm, ${sigmaText(sel.a, sel.b)}${nextToMeasure().has(wallKey(sel.a, sel.b)) ? ' · <span class="next">measure this one next</span>' : ''}`
+      ) +
       numberRow(measured, dist(a, b) * 100, (m) => {
         setDistance(plan, sel.a, sel.b, m);
         closeSheet();
         resolve();
       }) +
-      (measured !== undefined ? `<div class="row"><button id="clearLen" class="link">Forget this measurement</button></div>` : '');
+      numberRow(wallThickness(plan, sel.a, sel.b), wallThickness(plan, sel.a, sel.b) * 100, (m) => {
+        setWallThickness(plan, sel.a, sel.b, m);
+        closeSheet();
+        resolve();
+      }, { id: 'thick', label: 'Thickness', focus: false }) +
+      `<div class="row">` +
+      `<button id="tieParallel" class="icon" title="Make another wall parallel to this one"><svg viewBox="0 0 24 24"><path d="M7 4 4 20M20 4l-3 16"/></svg>Parallel to…</button>` +
+      `<button id="tieEqual" class="icon" title="Give another wall the same length"><svg viewBox="0 0 24 24"><path d="M4 9h16M4 15h16"/></svg>Same length…</button>` +
+      `</div>` +
+      wallTies(plan, sel.a, sel.b)
+        .map((t, i) => `<div class="row"><span class="tie">${t.type === 'parallel' ? '∥ parallel to' : '= same length as'} the purple wall</span><button id="untie${i}" class="link">Remove</button></div>`)
+        .join('') +
+      `<div class="row"><button id="thickAll" class="link">Same thickness for the whole room</button>${measured !== undefined ? '<button id="clearLen" class="link">Forget the length</button>' : ''}</div>`;
+    const pickTie = (type: WallTie) => {
+      tiePick = { type, a: sel.a, b: sel.b };
+      showScanMsg(`Now tap the wall that should be ${type === 'parallel' ? 'parallel to this one' : 'the same length'}. Tap anywhere else to cancel.`);
+      sheet.hidden = true;
+    };
+    el('tieParallel').onclick = () => pickTie('parallel');
+    el('tieEqual').onclick = () => pickTie('equal');
+    wallTies(plan, sel.a, sel.b).forEach((t, i) => {
+      el(`untie${i}`).onclick = () => {
+        removeWallTie(plan, t.type, sel.a, sel.b, t.a, t.b);
+        sheet.dataset.key = '';
+        resolve();
+      };
+    });
+    el('thickAll').onclick = () => {
+      const t = wallThickness(plan, sel.a, sel.b);
+      const ids = roomIdsOf(plan, sel.a);
+      for (const w of plan.walls) if (ids.has(w.a)) setWallThickness(plan, w.a, w.b, t);
+      closeSheet();
+      resolve();
+    };
     if (measured !== undefined) {
       el('clearLen').onclick = () => {
         clearDistance(plan, sel.a, sel.b);
@@ -555,6 +760,35 @@ function renderSheet(): void {
       closeSheet();
       resolve();
     };
+  } else if (sel?.kind === 'stair') {
+    const st = plan.stairs.find((x) => x.id === sel.id);
+    if (!st) return closeSheet();
+    const update = (change: () => void) => {
+      change();
+      commit();
+      sheet.dataset.key = '';
+      render();
+      renderUi();
+    };
+    sheet.innerHTML =
+      head('Stairs', `${st.steps} steps of ${((st.length / st.steps) * 100).toFixed(0)} cm · drag to move`) +
+      numberRow(st.width, st.width * 100, (m) => update(() => (st.width = m)), { id: 'stW', label: 'Width', focus: false }) +
+      numberRow(st.length, st.length * 100, (m) => update(() => (st.length = m)), { id: 'stL', label: 'Length', focus: false }) +
+      numberRow(st.steps, st.steps, (n) => update(() => (st.steps = Math.max(1, Math.round(n)))), { id: 'stN', label: 'Steps', focus: false, unit: '', factor: 1 }) +
+      `<div class="row">` +
+      `<button id="stRot" class="icon" title="Turn a quarter turn"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Turn 90°</button>` +
+      `<button id="stFlip" class="icon" title="Go up the other way"><svg viewBox="0 0 24 24"><path d="M8 20V4M4 8l4-4 4 4M16 4v16M12 16l4 4 4-4"/></svg>Up/down</button>` +
+      `<button id="stDel" class="icon danger" title="Delete these stairs"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
+      `</div>`;
+    el('stRot').onclick = () => update(() => (st.angle = (st.angle + 90) % 360));
+    el('stFlip').onclick = () => update(() => (st.angle = (st.angle + 180) % 360));
+    el('stDel').onclick = () => {
+      if (!confirm('Delete these stairs?')) return;
+      plan.stairs = plan.stairs.filter((x) => x.id !== st.id);
+      commit();
+      closeSheet();
+      render();
+    };
   } else if (sel?.kind === 'room') {
     const ids = roomIdsOf(plan, sel.id);
     if (ids.size < 3) return closeSheet();
@@ -572,12 +806,30 @@ function renderSheet(): void {
   } else if (sel?.kind === 'point') {
     const canSquare = cornerNeighbours(plan, sel.id) !== undefined;
     const square = findRightAngle(plan, sel.id);
+    const held = findAngle(plan, sel.id);
+    const now = cornerAngle(sel.id);
     sheet.innerHTML =
       head('Corner', 'drag to move') +
       `<div class="row">` +
       `<button id="angle" class="icon ${square ? 'on' : ''}" ${canSquare ? '' : 'disabled'} title="${square ? 'Held at 90°, tap to release' : 'Hold this corner at 90°'}" aria-pressed="${square}"><svg viewBox="0 0 24 24"><path d="M5 3v16h16"/><path d="M5 13h6v6"/></svg>${square ? '90° on' : '90° off'}</button>` +
       `<button id="del" class="icon danger" title="Delete this corner"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
-      `</div>`;
+      `</div>` +
+      (canSquare
+        ? numberRow(held, now ?? 90, (deg) => {
+            if (deg >= 180) return;
+            setAngle(plan, sel.id, deg);
+            sheet.dataset.key = '';
+            resolve();
+          }, { id: 'deg', label: 'Angle', focus: false, unit: '°', factor: 1 }) +
+          (held !== undefined && !square ? `<div class="row"><button id="freeAngle" class="link">Let the angle free</button></div>` : '')
+        : '');
+    if (held !== undefined && !square) {
+      el('freeAngle').onclick = () => {
+        setAngle(plan, sel.id, undefined);
+        sheet.dataset.key = '';
+        resolve();
+      };
+    }
     el('angle').onclick = () => {
       toggleRightAngle(plan, sel.id);
       sheet.dataset.key = '';
@@ -700,6 +952,21 @@ canvas.addEventListener('pointerdown', (e) => {
   const tol = e.pointerType === 'touch' ? TOUCH_HIT : 1;
   selectionBeforeTouch = selection;
 
+  if (tiePick) {
+    const pick = tiePick;
+    tiePick = null;
+    showScanMsg(null);
+    const w = hitWall(pos.x, pos.y, tol);
+    if (w && !((w.a === pick.a && w.b === pick.b) || (w.a === pick.b && w.b === pick.a))) {
+      addWallTie(plan, pick.type, pick.a, pick.b, w.a, w.b);
+      selection = { kind: 'wall', a: pick.a, b: pick.b };
+      sheet.dataset.key = '';
+      resolve();
+      return;
+    }
+    sheet.dataset.key = '';
+  }
+
   if (joinFrom) {
     const target = hitOpening(pos.x, pos.y, tol);
     if (target) return joinTap(target);
@@ -708,11 +975,13 @@ canvas.addEventListener('pointerdown', (e) => {
   }
 
   if (tool === 'wall') return wallTap(pos, tol);
+  if (tool === 'stair') return stairTap(pos);
   if (tool) return openingTap(pos, tol);
 
   const pid = hitPoint(pos.x, pos.y, tol);
   const oid = pid ? undefined : hitOpening(pos.x, pos.y, tol);
   const w = pid || oid ? undefined : hitWall(pos.x, pos.y, tol);
+  const st = pid || oid || w ? undefined : [...plan.stairs].reverse().find((x) => insideStair(x, cursor));
   if (pid) {
     selection = { kind: 'point', id: pid };
     drag = { kind: 'point', id: pid, moved: false };
@@ -720,6 +989,9 @@ canvas.addEventListener('pointerdown', (e) => {
     selection = { kind: 'opening', id: oid };
   } else if (w) {
     selection = { kind: 'wall', a: w.a, b: w.b };
+  } else if (st) {
+    selection = { kind: 'stair', id: st.id };
+    drag = { kind: 'stair', id: st.id, from: cursor, start: { x: st.x, y: st.y }, moved: false };
   } else {
     selection = null;
     drag = { kind: 'pan', x: pos.x, y: pos.y, moved: false };
@@ -749,6 +1021,15 @@ canvas.addEventListener('pointermove', (e) => {
       drag.moved = true;
     }
     render();
+  } else if (drag?.kind === 'stair') {
+    const d = drag;
+    const st = plan.stairs.find((x) => x.id === d.id);
+    if (st) {
+      st.x = d.start.x + cursor.x - d.from.x;
+      st.y = d.start.y + cursor.y - d.from.y;
+      d.moved = true;
+    }
+    render();
   } else if (drag?.kind === 'pan') {
     if (Math.hypot(pos.x - drag.x, pos.y - drag.y) > 3) drag.moved = true;
     view.ox += pos.x - drag.x;
@@ -769,11 +1050,23 @@ const pointerEnd = (e: PointerEvent) => {
     return;
   }
   const moved = drag?.kind === 'point' && drag.moved;
+  if (drag?.kind === 'stair' && drag.moved) commit();
   const tapped = drag?.kind === 'pan' && !drag.moved && e.type === 'pointerup';
   drag = null;
   if (moved) resolve();
   if (tapped) tapRoom(eventPos(e));
 };
+
+/** Stairs tool: a flight centred where tapped, then its panel for the size. */
+function stairTap(pos: Vec): void {
+  const st = newStair(toWorld(pos.x, pos.y));
+  plan.stairs.push(st);
+  tool = null;
+  selection = { kind: 'stair', id: st.id };
+  commit();
+  render();
+  renderUi();
+}
 
 /** A tap on empty floor inside a room selects the room. */
 function tapRoom(pos: Vec): void {
@@ -830,8 +1123,9 @@ window.addEventListener('keydown', (e) => {
     restore(history.redo());
     return;
   }
-  if (e.key === 'Escape' && joinFrom) {
+  if (e.key === 'Escape' && (joinFrom || tiePick)) {
     joinFrom = null;
+    tiePick = null;
     showScanMsg(null);
     render();
   } else if (e.key === 'Escape' && tool) setTool(null);
@@ -840,6 +1134,7 @@ window.addEventListener('keydown', (e) => {
   const sel = selection;
   if (sel?.kind === 'point') removePoint(plan, sel.id);
   else if (sel?.kind === 'opening') plan.openings = plan.openings.filter((x) => x.id !== sel.id);
+  else if (sel?.kind === 'stair') plan.stairs = plan.stairs.filter((x) => x.id !== sel.id);
   else return;
   selection = null;
   resolve();
@@ -895,7 +1190,7 @@ el('menu').addEventListener('click', () => {
 
 el('scanData').onclick = downloadScan;
 
-for (const t of ['wall', 'door', 'window'] as const) {
+for (const t of ['wall', 'door', 'window', 'stair'] as const) {
   el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);
 }
 

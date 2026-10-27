@@ -1,6 +1,6 @@
 // Rooms (points joined by walls), the doors that tie rooms together, and deleting a room.
 
-import { Opening, Plan, Vec, pointById, removePoint } from './model';
+import { Opening, Plan, Vec, pointById, removePoint, sameWall, wallThickness } from './model';
 
 const mid = (a: Vec, b: Vec): Vec => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
@@ -73,6 +73,41 @@ export function roomLoop(plan: Plan, ids: Set<string>): string[] | null {
   return loop.length === ids.size ? loop : null;
 }
 
+/**
+ * The room's walls as a band: `inner` is the line of corners, `outer` the same
+ * corners pushed out by each wall's thickness (mitred), when it is a simple loop.
+ */
+export function roomOutline(plan: Plan, ids: Set<string>): { inner: Vec[]; outer: Vec[] } | null {
+  const loop = roomLoop(plan, ids);
+  if (!loop) return null;
+  const pts = loop.map((id) => pointById(plan, id)!);
+  const n = pts.length;
+  let area = 0;
+  pts.forEach((p, i) => {
+    const q = pts[(i + 1) % n];
+    area += p.x * q.y - q.x * p.y;
+  });
+  const dirs = pts.map((p, i) => {
+    const q = pts[(i + 1) % n];
+    const len = Math.hypot(q.x - p.x, q.y - p.y) || 1;
+    return { x: (q.x - p.x) / len, y: (q.y - p.y) / len };
+  });
+  // the room is on the left of the walking direction when the area is positive, so out is the right
+  const out = dirs.map((d) => (area > 0 ? { x: d.y, y: -d.x } : { x: -d.y, y: d.x }));
+  const t = loop.map((id, i) => wallThickness(plan, id, loop[(i + 1) % n]));
+  const outer = pts.map((p, i) => {
+    const h = (i + n - 1) % n;
+    const b1 = { x: pts[h].x + out[h].x * t[h], y: pts[h].y + out[h].y * t[h] };
+    const b2 = { x: p.x + out[i].x * t[i], y: p.y + out[i].y * t[i] };
+    const cross = dirs[h].x * dirs[i].y - dirs[h].y * dirs[i].x;
+    if (Math.abs(cross) < 1e-6) return b2;
+    const s = ((b2.x - b1.x) * dirs[i].y - (b2.y - b1.y) * dirs[i].x) / cross;
+    const m = { x: b1.x + dirs[h].x * s, y: b1.y + dirs[h].y * s };
+    return Math.hypot(m.x - p.x, m.y - p.y) > 4 * Math.max(t[h], t[i]) + 1e-9 ? b2 : m;
+  });
+  return { inner: pts.map((p) => ({ x: p.x, y: p.y })), outer };
+}
+
 /** Floor area in m², when the room is a simple loop. */
 export function roomArea(plan: Plan, ids: Set<string>): number | null {
   const loop = roomLoop(plan, ids);
@@ -99,6 +134,20 @@ export function openingFrame(plan: Plan, o: Opening): { p1: Vec; p2: Vec; u: Vec
   const m = mid(p1, p2);
   if (!insideRoom(plan, roomIdsOf(plan, o.a), { x: m.x + n.x * 0.05, y: m.y + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
   return { p1, p2, u, n };
+}
+
+/** Sets a wall's thickness; a wall holding a joined door gives the same thickness to the wall on the other side. */
+export function setWallThickness(plan: Plan, a: string, b: string, thickness: number): void {
+  const wall = plan.walls.find((w) => sameWall(w, a, b));
+  if (!wall) return;
+  wall.thickness = thickness;
+  for (const o of plan.openings) {
+    if (!sameWall(wall, o.a, o.b)) continue;
+    const j = joinOf(plan, o.id);
+    const other = j && plan.openings.find((x) => x.id === (j.a === o.id ? j.b : j.a));
+    const w = other && plan.walls.find((x) => sameWall(x, other.a, other.b));
+    if (w) w.thickness = thickness;
+  }
 }
 
 /** Removes a whole room: its corners, walls, measurements, doors and windows. */
@@ -160,12 +209,18 @@ export function unjoin(plan: Plan, openingId: string): void {
   plan.joins = plan.joins.filter((j) => j.a !== openingId && j.b !== openingId);
 }
 
-/** Moves a room (corners and their capture positions) so its door `moving` lands on door `fixed`, on the far side of the wall. */
+/** Moves a room (corners and their capture positions) so its door `moving` lands on door `fixed`, on the far side of the wall (one wall thickness away). */
 function alignRoom(plan: Plan, fixed: Opening, moving: Opening, ids: string[]): void {
   const f = openingFrame(plan, fixed);
   const m = openingFrame(plan, moving);
   if (!f || !m) return;
-  const cf = mid(f.p1, f.p2);
+  // both rooms are measured on their inside faces, so the doors sit one wall thickness apart
+  const fw = plan.walls.find((w) => sameWall(w, fixed.a, fixed.b));
+  const mw = plan.walls.find((w) => sameWall(w, moving.a, moving.b));
+  const t = wallThickness(plan, fixed.a, fixed.b);
+  if (fw && mw) mw.thickness = fw.thickness;
+  const cf0 = mid(f.p1, f.p2);
+  const cf = { x: cf0.x - f.n.x * t, y: cf0.y - f.n.y * t };
   const cm = mid(m.p1, m.p2);
   const theta = Math.atan2(-f.n.y, -f.n.x) - Math.atan2(m.n.y, m.n.x);
   const cos = Math.cos(theta);

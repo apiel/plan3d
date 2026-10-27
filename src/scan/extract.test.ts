@@ -58,8 +58,32 @@ function rayToBox(o: [number, number, number], dir: [number, number, number], b:
   return tmin > 1e-6 ? tmin : Infinity;
 }
 
+/** A doorway or window: part of a wall (a to b) open from `bottom` to `top` metres; behind it the rays go on to the walls of `beyond`. */
+interface Hole {
+  a: Vec;
+  b: Vec;
+  bottom: number;
+  top: number;
+  beyond: Vec[];
+}
+
+const onSegment = (p: Vec, a: Vec, b: Vec) => {
+  const ex = b.x - a.x;
+  const ey = b.y - a.y;
+  const t = ((p.x - a.x) * ex + (p.y - a.y) * ey) / (ex * ex + ey * ey);
+  return t >= 0 && t <= 1 && Math.abs((p.x - a.x) * ey - (p.y - a.y) * ex) / Math.hypot(ex, ey) < 1e-6;
+};
+
 /** What a phone turning on the spot at each position would see in a room. */
-function scan(poly: Vec[], ceiling: number, cams: Vec[], noise = 0.02, camY = 1.4, boxes: TestBox[] = []): Keyframe[] {
+function scan(
+  poly: Vec[],
+  ceiling: number,
+  cams: Vec[],
+  noise = 0.02,
+  camY = 1.4,
+  boxes: TestBox[] = [],
+  holes: Hole[] = []
+): Keyframe[] {
   const rand = rng(7);
   return cams.map((c) => {
     const pts: number[] = [];
@@ -69,7 +93,13 @@ function scan(poly: Vec[], ceiling: number, cams: Vec[], noise = 0.02, camY = 1.
         const e = (el * Math.PI) / 180;
         const dx = Math.cos(a);
         const dz = Math.sin(a);
-        let t = rayToPolygon(c, dx, dz, poly) / Math.cos(e);
+        let flat = rayToPolygon(c, dx, dz, poly);
+        // through a doorway or window: the ray goes on to whatever is behind it
+        const at = { x: c.x + dx * flat, y: c.y + dz * flat };
+        const y = camY + Math.tan(e) * flat;
+        const hole = holes.find((h) => onSegment(at, h.a, h.b) && y > h.bottom && y < h.top);
+        if (hole) flat += rayToPolygon(at, dx, dz, hole.beyond); // from the opening on to the far side of the space behind it
+        let t = flat / Math.cos(e);
         if (el < 0) t = Math.min(t, camY / -Math.sin(e));
         if (el > 0) t = Math.min(t, (ceiling - camY) / Math.sin(e));
         for (const b of boxes) t = Math.min(t, rayToBox([c.x, camY, c.y], [Math.cos(e) * dx, Math.sin(e), Math.cos(e) * dz], b));
@@ -312,5 +342,61 @@ describe('extractRoom', () => {
   it('gives up on too little data', () => {
     expect(extractRoom([])).toBeNull();
     expect(extractRoom([{ cam: [0, 1, 0], points: new Float32Array(30) }])).toBeNull();
+  });
+
+  describe('doors and windows nobody marked', () => {
+    const cams = [
+      { x: 1, y: 1 },
+      { x: 3, y: 1 },
+      { x: 1, y: 2 },
+      { x: 3, y: 2 },
+      { x: 2, y: 1.5 },
+    ];
+    const box = (x0: number, y0: number, x1: number, y1: number): Vec[] => [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 },
+    ];
+    // an open doorway in the bottom wall (y = 3) from x = 1.2 to 2.1 onto a corridor, and an
+    // 80 cm window in the right wall (x = 4) from y = 1.2 to 2.0, sill at 0.9 m, onto a veranda
+    const holes: Hole[] = [
+      { a: { x: 1.2, y: 3 }, b: { x: 2.1, y: 3 }, bottom: -1, top: 2.05, beyond: box(-1, 2.9, 6, 4.5) },
+      { a: { x: 4, y: 1.2 }, b: { x: 4, y: 2.0 }, bottom: 0.9, top: 2.1, beyond: box(3.9, 0, 6, 3) },
+    ];
+
+    it('finds an open doorway and a window from what the phone saw through the walls', () => {
+      const room = extractRoom(scan(rect, 2.5, cams, 0.02, 1.4, [], holes))!;
+      expect(room).not.toBeNull();
+      expect(room.corners).toHaveLength(4);
+      const door = room.openings.find((o) => o.type === 'door');
+      const win = room.openings.find((o) => o.type === 'window');
+      expect(door).toBeDefined();
+      expect(win).toBeDefined();
+      expect(room.openings).toHaveLength(2);
+      // the extracted outline starts at its own corner: check widths, and that the two are on different walls
+      expect(door!.to - door!.from).toBeGreaterThan(0.7);
+      expect(door!.to - door!.from).toBeLessThan(1.1);
+      expect(win!.to - win!.from).toBeGreaterThan(0.6);
+      expect(win!.to - win!.from).toBeLessThan(1.0);
+      expect(door!.wall).not.toBe(win!.wall);
+      const len = (i: number) => dist(room.corners[i], room.corners[(i + 1) % room.corners.length]);
+      expect(len(door!.wall)).toBeCloseTo(4, 0);
+      expect(len(win!.wall)).toBeCloseTo(3, 0);
+    });
+
+    it('sees no openings in a closed room', () => {
+      expect(extractRoom(scan(rect, 2.5, cams))!.openings).toHaveLength(0);
+    });
+
+    it('keeps a marked door instead of the one it would have found', () => {
+      const marks = {
+        corners: [],
+        openings: [{ type: 'door' as const, a: [1.25, 1.0, 2.95] as [number, number, number], b: [2.05, 1.0, 2.95] as [number, number, number] }],
+      };
+      const room = extractRoom(scan(rect, 2.5, cams, 0.02, 1.4, [], holes), marks)!;
+      expect(room.openings.filter((o) => o.type === 'door')).toHaveLength(1);
+      expect(room.openings.filter((o) => o.type === 'window')).toHaveLength(1);
+    });
   });
 });

@@ -9,21 +9,22 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 - [ ] Replay the downloaded files (`npm run replay -- file.json`), look at the SVG, tune the constants in `src/scan/extract.ts` (`WALL_BAND_FROM`, `FREE_MIN`, `OCC_MIN`, `STUB`, furniture thresholds). Turn good files into test fixtures (they are big: maybe keep a subsampled copy).
 - [ ] Check on real data: is the world really y-up (the extraction relies on it); is the depth grid orientation right (24 columns by 32 rows, portrait); is the ceiling seen (if not, walls come from a lower band that includes furniture).
 - [ ] Better scan guidance: show which directions are still uncovered, warn when the floor or ceiling was never seen (floor height is estimated from the lowest 2% of points).
-- [ ] Click through the editor in a browser and fix whatever is broken (draw room, set length, right angle, drag, import/export).
-- [ ] Commit, push, enable GitHub Pages (a workflow that runs `npm run build` and publishes `dist/`). `base` is already `./`.
+- [~] Click through the editor in a browser: in use on desktop and phone, fixes made as found.
+- [x] Commit, push, GitHub Pages (workflow in `.github/workflows/pages.yml`), live at apiel.github.io/plan3d.
 - [ ] Test depth accuracy properly: known tape distances, textured vs blank white wall, short vs long, note the error. Decides how much to trust `SIGMA.sensor` (currently 5 cm).
 
 ## Plan editor
 
-- [ ] Detect doors from the scan (gaps in the wall band seen from inside) instead of leaving them as ragged edges.
-- [ ] Doors and windows: openings come from scan marks, drawn with plan symbols; type, width and delete in the editor. Added by hand with the door/window tools. Still missing: slide it along the wall, flip the door swing/hinge side, measured sizes as constraints, window sill and height.
-- [x] Join rooms through a shared door (`src/rooms.ts`): select a door, Join rooms, tap the same door in the other room; the second room moves and turns onto it and stays attached when measurements rescale it. Not tried on the phone. Still missing: wall thickness between rooms.
-- [ ] More constraints: parallel walls, horizontal/vertical, equal length, fixed angle (not only 90°).
-- [ ] Highlight which walls are least certain (e.g. from the solver covariance) so you know what to measure next.
-- [x] Undo/redo (`src/history.ts`).
-- [x] Multiple rooms in one plan: each Scan room adds one, tap the floor of a room to select it and delete it.
-- [ ] Flat/house level, several plans, rename.
+- [x] Detect doors from the scan instead of leaving them as ragged edges (`seeThroughOpenings`, `cutNecks` in `src/scan/extract.ts`): free space seen through a doorway is cut off at necks under ~1.1 m, and stretches of wall the phone saw through become doors (open at hip and chest height) or windows (wall under the sill). Synthetic tests only. A closed door, or glass that stops the depth, cannot be seen this way: mark those. Rooms narrower than ~1.1 m skip the cut. Check on real scans: `NECK`, `SEE_*`, `LOW_BAND`/`MID_BAND`, `JOG`.
+- [ ] Doors and windows: openings come from scan marks, drawn with plan symbols; type, width and delete in the editor. Added by hand with the door/window tools. Hinge side and swing flip done, widths shown on the plan. Still missing: slide it along the wall, measured sizes as constraints, window sill and height.
+- [x] Join rooms through a shared door (`src/rooms.ts`): select a door, Join rooms, tap the same door in the other room; the second room moves and turns onto it (one wall thickness apart) and stays attached when measurements rescale it. Not tried on the phone.
+- [x] More constraints: parallel walls, equal length (wall panel: Parallel to… / Same length…, then tap the other wall), fixed angle (corner panel: Angle field). Not done: horizontal/vertical.
+- [x] Least certain walls from the solver covariance: wall panel shows ± cm, and the unmeasured wall worth measuring next in each room is orange.
+- [x] Undo/redo (`src/history.ts`): buttons under the tools, Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y.
+- [x] Multiple rooms in one plan: each Scan room adds one, tap a room's floor to select it and delete it.
+- [ ] Flat/house level (several floors), several plans, rename.
 - [x] Touch support on the editor (pinch zoom, pan, bigger tap areas): done, to check on the phone.
+- [x] Wall thickness: per wall (default 10 cm), set in the wall panel, outward from the room's inner face. Not tried on the phone.
 - [ ] Ceiling height and room name per room.
 
 ## Versions / updates
@@ -55,3 +56,17 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 
 - 3d plan should also take 8 picture of the room, which can be updated over time, to have a timeline
+
+- ~~the right angle symbol look like there is a pilone in the room~~ done: the angle is only drawn at the selected corner (also while dragging), square at 90°, otherwise an arc and the value.
+
+- give name to room
+
+- ~~we need to be able to place stair case~~ done: stairs tool (straight flight: width, length, steps, turn, up/down, drag to move). Not yet: L/U-shaped stairs, linking floors.
+
+- ~~ctrl+z ctrl+shift+z should work for undo redo~~ done.
+
+- when adding a wall manually i am not able to set angle to 90degree
+
+
+
+- How can i share a plan with someone...?
