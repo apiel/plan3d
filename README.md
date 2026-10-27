@@ -56,6 +56,18 @@ npm run replay -- scan-....json
 
 prints floor/ceiling, wall lengths, doors/windows and furniture, and writes `scan-....svg`: raw top-down points on the left (green: wall band, grey: lower, red: camera positions, pink squares: marked corners, blue/cyan lines: marked doors/windows), the extracted room and furniture on the right. Use it to tune the constants at the top of `src/scan/extract.ts`, and add good files as test fixtures.
 
+## Google Drive sync (optional)
+
+The ⋯ menu gets **Save to Google Drive** / **Load from Google Drive** once `CLIENT_ID` in `src/drive.ts` is set. The page signs in with Google Identity Services and calls the Drive REST API directly (no backend). It uses the `drive.file` scope: the app only sees the file it created itself (`plan3d.json`, one plan, newest save wins). Plans stay in the user's own Drive. Everyone using the deployed site uses the same client ID but their own account.
+
+One-time setup:
+
+1. <https://console.cloud.google.com/>: create a project (e.g. "plan3d").
+2. APIs & Services > Library: enable **Google Drive API**.
+3. APIs & Services > OAuth consent screen (Google Auth Platform): app name, your email, user type External. Add the scope `.../auth/drive.file`. Leave it in **Testing** and add your Google account under **Test users** (only listed accounts can sign in; publish it later to open it to anyone).
+4. Credentials > Create credentials > OAuth client ID > **Web application**. Authorized JavaScript origins: `http://localhost:5173` and your GitHub Pages origin (`https://<user>.github.io`, no path).
+5. Paste the client ID into `CLIENT_ID` in `src/drive.ts`. It is public, safe to commit.
+
 ## Depth test on a phone
 
 `depth.html` checks whether the phone gives usable depth through WebXR and measures between two points, to compare with a tape. Aim the crosshair at a point and tap, then aim at a second point and tap.
@@ -75,6 +87,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/model.ts` | Plan data model (points, walls, constraints) and edit helpers. Metres, y down. |
 | `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian): capture shape per room at a free scale, measured distances, right angles. `SIGMA` sets how much each kind of fact is trusted. |
 | `src/solver.test.ts` | Solver tests (vitest). |
+| `src/drive.ts` | Save/load the plan JSON in Google Drive (token via Google Identity Services, Drive REST). |
 | `src/main.ts` | Canvas editor and side panel. |
 | `src/scan.ts` | AR scan, started from the editor: collects depth keyframes, crosshair marks drawn over the camera, mini map, adds the room to the plan. |
 | `src/scan/extract.ts` | Keyframes to room outline (see above). |

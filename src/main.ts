@@ -18,6 +18,7 @@ import {
   setDistance,
   toggleRightAngle,
 } from './model';
+import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { SolveResult, apply, solve } from './solver';
 import { load, save } from './storage';
@@ -788,6 +789,42 @@ el<HTMLInputElement>('file').onchange = async (e) => {
     resolve();
   } catch (err) {
     alert(`Could not import: ${(err as Error).message}`);
+  }
+};
+
+// ---------- google drive ----------
+
+if (driveEnabled) {
+  el('driveSave').hidden = false;
+  el('driveLoad').hidden = false;
+}
+
+el('driveSave').onclick = async () => {
+  try {
+    showScanMsg('Saving to Google Drive…');
+    await saveToDrive(serialize(plan));
+    showScanMsg('Saved to Google Drive');
+  } catch (err) {
+    showScanMsg(`Could not save: ${(err as Error).message}`);
+  }
+  setTimeout(() => showScanMsg(null), 3000);
+};
+
+el('driveLoad').onclick = async () => {
+  try {
+    showScanMsg('Loading from Google Drive…');
+    const text = await loadFromDrive();
+    if (text === null) return showScanMsg('No plan saved in Google Drive yet');
+    if (plan.points.length && !confirm('Replace the current plan with the one from Google Drive?')) {
+      return showScanMsg(null);
+    }
+    plan = parse(text);
+    selection = null;
+    fit();
+    resolve();
+    showScanMsg(null);
+  } catch (err) {
+    showScanMsg(`Could not load: ${(err as Error).message}`);
   }
 };
 

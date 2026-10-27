@@ -29,7 +29,7 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - [ ] Keep plan history (git-style snapshots) so a re-scan after renovation is a new version; diff between versions.
 - [ ] Rescan one room and replace it in the plan, re-anchored through its door.
-- [ ] Optional sync: commit the plan JSON to a private GitHub repo via the API. Never commit real plans to a public repo.
+- [x] Optional sync: Google Drive (`src/drive.ts`), written, not tried yet: needs `CLIENT_ID` set (see README). Chosen over a GitHub repo (no backend OAuth, no tokens pasted). Never commit real plans to a public repo.
 
 ## 3D and home use
 
