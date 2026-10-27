@@ -59,7 +59,7 @@ prints floor/ceiling, wall lengths, doors/windows and furniture, and writes `sca
 
 ## Google Drive sync (optional)
 
-The ⋯ menu gets **Save to Google Drive** / **Load from Google Drive** once `CLIENT_ID` in `src/drive.ts` is set. The page signs in with Google Identity Services and calls the Drive REST API directly (no backend). It uses the `drive.file` scope: the app only sees the file it created itself (`plan3d.json`, one plan, newest save wins). Plans stay in the user's own Drive. Everyone using the deployed site uses the same client ID but their own account.
+The ⋯ menu gets **Save to Google Drive** / **Load from Google Drive** once `CLIENT_ID` in `src/drive.ts` is set. The page signs in with Google Identity Services and calls the Drive REST API directly (no backend). It uses the `drive.file` scope: the app only sees the file it created itself (`plan3d.svg`: the plan drawing with its JSON inside, see `src/planfile.ts`; one plan, newest save wins; an older `plan3d.json` is still loaded when there is no SVG yet). Plans stay in the user's own Drive. Everyone using the deployed site uses the same client ID but their own account.
 
 One-time setup:
 
@@ -88,8 +88,8 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/model.ts` | Plan data model (points, walls, constraints) and edit helpers. Metres, y down. |
 | `src/solver.ts` | Least-squares adjustment (Levenberg-Marquardt, numeric Jacobian): capture shape per room at a free scale, measured distances, right and typed angles, parallel and equal-length walls; each wall's remaining uncertainty from the covariance. `SIGMA` sets how much each kind of fact is trusted. |
 | `src/solver.test.ts` | Solver tests (vitest). |
-| `src/drive.ts` | Save/load the plan JSON in Google Drive (token via Google Identity Services, Drive REST). |
-| `src/rooms.ts` | Rooms (points joined by walls), joining rooms through a shared door, deleting a room. |
+| `src/drive.ts` | Save/load the plan in Google Drive as `plan3d.svg` (picture with the JSON inside) (token via Google Identity Services, Drive REST). |
+| `src/rooms.ts` | Rooms (the areas closed in by walls) and groups (corners joined by walls), joining walls at T junctions, room names, joining rooms through a shared door, duplicating and deleting a room. |
 | `src/history.ts` | Undo/redo over plan snapshots. |
 | `src/stairs.ts` | Straight stairs: geometry for drawing and tapping. |
 | `src/main.ts` | Canvas editor and side panel. |
@@ -98,6 +98,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
 | `scripts/replay.ts` | Replays a downloaded scan through the extraction and writes an SVG. |
 | `src/storage.ts` | Plan persistence in `localStorage`. |
+| `src/planfile.ts` | The plan as an SVG file: a drawing carrying the plan JSON in `<metadata>` and instructions for an AI editing it; reading .svg or .json back with checks. |
 | `src/xr.ts` | WebXR matrix helpers shared by the scan code. |
 | `src/depth-test.js` | WebXR depth test page logic (plain JS, predates the scan). |
 

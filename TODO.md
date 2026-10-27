@@ -17,7 +17,7 @@
 
 - 3d plan should also take 8 picture of the room, which can be updated over time, to have a timeline
 
-- How can i share a plan with someone...?
+- ~~How can i share a plan with someone...?~~ partly: "Export plan (SVG)" is a picture of the plan anyone can open (browser, phone), and it can be imported back. Not yet: a link to open it in the app.
 
 - Would there be way to kind of suggest door, windows and corner in the scan view? and then we could apply them or not
 
@@ -27,3 +27,7 @@
 
 
 - AI export with instruction...
+
+
+- Give a way to name the file for save... give a name to the whole project
+- ~~save the plan as SVG with metadata, so an AI chat can edit it~~ done: "Export plan (SVG)" writes a drawing of the plan with the plan JSON (exactly what "Export plan (JSON)" gives) in `<metadata id="plan3d-data">` and instructions for an AI in a comment at the top (`src/planfile.ts`). "Import plan" takes .svg or .json, ignores the drawing, checks the plan (missing ids, bad numbers) and says what changed; undo goes back. Not tried yet with Claude / ChatGPT / Gemini.

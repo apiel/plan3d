@@ -30,6 +30,7 @@ import {
   wallThickness,
   wallTies,
 } from './model';
+import { planToSvg, readPlanFile } from './planfile';
 import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
@@ -1590,14 +1591,18 @@ el('clear').onclick = () => {
   resolve();
 };
 
-el('export').onclick = () => {
-  const url = URL.createObjectURL(new Blob([serialize(plan)], { type: 'application/json' }));
+function download(text: string, type: string, name: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'plan3d.json';
+  a.download = name;
   a.click();
   URL.revokeObjectURL(url);
-};
+}
+
+// the SVG is a picture of the plan carrying the same JSON, to share or to have an AI edit
+el('export').onclick = () => download(planToSvg(plan), 'image/svg+xml', 'plan3d.svg');
+el('exportJson').onclick = () => download(serialize(plan), 'application/json', 'plan3d.json');
 
 el('import').onclick = () => el<HTMLInputElement>('file').click();
 el<HTMLInputElement>('file').onchange = async (e) => {
@@ -1606,14 +1611,32 @@ el<HTMLInputElement>('file').onchange = async (e) => {
   input.value = '';
   if (!file) return;
   try {
-    plan = parse(await file.text());
+    const before = plan;
+    plan = readPlanFile(await file.text());
     selection = null;
     fit();
-    resolve();
+    resolve(); // one undo step: undo goes back to the plan before the import
+    showScanMsg(importSummary(before, plan));
   } catch (err) {
-    alert(`Could not import: ${(err as Error).message}`);
+    alert(`Could not import:\n${(err as Error).message}`);
   }
 };
+
+/** What an import changed, counted: "Imported: 2 walls added, 1 door removed…". */
+function importSummary(before: Plan, after: Plan): string {
+  const parts: string[] = [];
+  const count = (what: string, a: number, b: number) => {
+    if (b > a) parts.push(`${b - a} ${what}${b - a > 1 ? 's' : ''} added`);
+    if (b < a) parts.push(`${a - b} ${what}${a - b > 1 ? 's' : ''} removed`);
+  };
+  count('corner', before.points.length, after.points.length);
+  count('wall', before.walls.length, after.walls.length);
+  count('measurement', before.constraints.length, after.constraints.length);
+  count('door or window', before.openings.length, after.openings.length);
+  count('room name', before.names.length, after.names.length);
+  count('stair', before.stairs.length, after.stairs.length);
+  return `Imported${parts.length ? `: ${parts.join(', ')}` : ', same size as before'}. Undo goes back.`;
+}
 
 // ---------- google drive ----------
 
@@ -1625,7 +1648,7 @@ if (driveEnabled) {
 el('driveSave').onclick = async () => {
   try {
     showScanMsg('Saving to Google Drive…');
-    await saveToDrive(serialize(plan));
+    await saveToDrive(planToSvg(plan));
     showScanMsg('Saved to Google Drive');
   } catch (err) {
     showScanMsg(`Could not save: ${(err as Error).message}`);
@@ -1641,7 +1664,7 @@ el('driveLoad').onclick = async () => {
     if (plan.points.length && !confirm('Replace the current plan with the one from Google Drive?')) {
       return showScanMsg(null);
     }
-    plan = parse(text);
+    plan = readPlanFile(text);
     selection = null;
     fit();
     resolve();

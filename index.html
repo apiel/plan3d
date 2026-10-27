@@ -24,7 +24,8 @@
 <nav id="menu" hidden>
   <button id="square">Square all corners</button>
   <button id="fit">Fit to screen</button>
-  <button id="export">Export plan</button>
+  <button id="export">Export plan (SVG)</button>
+  <button id="exportJson">Export plan (JSON)</button>
   <button id="import">Import plan</button>
   <button id="driveSave" hidden>Save to Google Drive</button>
   <button id="driveLoad" hidden>Load from Google Drive</button>
@@ -33,7 +34,7 @@
   <a href="depth.html">Depth test page</a>
   <a href="privacy.html">Privacy policy</a>
 </nav>
-<input id="file" type="file" accept="application/json" hidden>
+<input id="file" type="file" accept=".svg,.json,image/svg+xml,application/json" hidden>
 
 <p id="scanMsg" class="chip warn" hidden></p>
 <button id="scan" class="primary fab">Scan room</button>

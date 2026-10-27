@@ -1,4 +1,5 @@
-// Save/load the plan as one JSON file in the user's own Google Drive, straight from the browser.
+// Save/load the plan as one SVG file (a picture carrying the plan JSON, see planfile.ts) in the
+// user's own Google Drive, straight from the browser. Older saves were a JSON file: still loaded.
 // Google Identity Services gives the page a short-lived access token; the Drive REST API takes it.
 // The drive.file scope only lets the app see files it created itself.
 
@@ -6,7 +7,8 @@
 export const CLIENT_ID: string = '148629905077-ae20c8e4opn5lhg6g9pe0f373q3dqpsh.apps.googleusercontent.com';
 
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const FILE_NAME = 'plan3d.json';
+const FILE_NAME = 'plan3d.svg';
+const OLD_FILE_NAME = 'plan3d.json';
 const API = 'https://www.googleapis.com';
 
 interface TokenClient {
@@ -83,27 +85,27 @@ async function call(path: string, init: RequestInit = {}): Promise<Response> {
   return res;
 }
 
-async function findFile(): Promise<string | null> {
-  const q = encodeURIComponent(`name='${FILE_NAME}' and trashed=false`);
+async function findFile(name = FILE_NAME): Promise<string | null> {
+  const q = encodeURIComponent(`name='${name}' and trashed=false`);
   const res = await call(`/drive/v3/files?q=${q}&orderBy=modifiedTime desc&fields=files(id)`);
   const { files } = (await res.json()) as { files: { id: string }[] };
   return files[0]?.id ?? null;
 }
 
-export async function saveToDrive(json: string): Promise<void> {
+export async function saveToDrive(svg: string): Promise<void> {
   const id = await findFile();
   if (id) {
     await call(`/upload/drive/v3/files/${id}?uploadType=media`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: json,
+      headers: { 'Content-Type': 'image/svg+xml' },
+      body: svg,
     });
     return;
   }
   const boundary = 'plan3d-boundary';
   const body =
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ name: FILE_NAME })}\r\n` +
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${json}\r\n--${boundary}--`;
+    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ name: FILE_NAME, mimeType: 'image/svg+xml' })}\r\n` +
+    `--${boundary}\r\nContent-Type: image/svg+xml\r\n\r\n${svg}\r\n--${boundary}--`;
   await call('/upload/drive/v3/files?uploadType=multipart', {
     method: 'POST',
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
@@ -111,9 +113,9 @@ export async function saveToDrive(json: string): Promise<void> {
   });
 }
 
-/** The saved plan JSON, or null when nothing was saved yet. */
+/** The saved plan file (SVG, or JSON from before), or null when nothing was saved yet. */
 export async function loadFromDrive(): Promise<string | null> {
-  const id = await findFile();
+  const id = (await findFile()) ?? (await findFile(OLD_FILE_NAME));
   if (!id) return null;
   return (await call(`/drive/v3/files/${id}?alt=media`)).text();
 }
