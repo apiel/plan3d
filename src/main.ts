@@ -20,6 +20,7 @@ import {
 } from './model';
 import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
+import { History } from './history';
 import { SolveResult, apply, solve } from './solver';
 import { load, save } from './storage';
 
@@ -85,6 +86,29 @@ function fit(): void {
 
 // ---------- solving ----------
 
+const history = new History();
+
+/** Persist the plan and record an undo step if it changed. */
+function commit(): void {
+  save(plan);
+  history.record(JSON.stringify(plan));
+  el<HTMLButtonElement>('undo').disabled = !history.canUndo;
+  el<HTMLButtonElement>('redo').disabled = !history.canRedo;
+}
+
+function restore(snapshot: string | undefined): void {
+  if (snapshot === undefined) return;
+  plan = parse(snapshot);
+  selection = null;
+  lastSolve = plan.points.length ? solve(plan) : null;
+  save(plan);
+  el<HTMLButtonElement>('undo').disabled = !history.canUndo;
+  el<HTMLButtonElement>('redo').disabled = !history.canRedo;
+  closeSheet();
+  render();
+  renderUi();
+}
+
 function resolve(): void {
   if (plan.points.length) {
     lastSolve = solve(plan);
@@ -92,7 +116,7 @@ function resolve(): void {
   } else {
     lastSolve = null;
   }
-  save(plan);
+  commit();
   render();
   renderUi();
 }
@@ -256,20 +280,23 @@ function drawOpening(o: Opening): void {
     for (const k of [-t, 0, t]) line({ x: s1.x + n.x * k, y: s1.y + n.y * k }, { x: s2.x + n.x * k, y: s2.y + n.y * k });
     return;
   }
-  // door: leaf hinged at the first end, open into the room, and its swing
+  // door: leaf hinged at one end, open into the room (or out of it), and its swing
+  const hinge = o.hingeAtB ? s2 : s1;
+  const closed = o.hingeAtB ? { x: -g.u.x, y: -g.u.y } : g.u; // from the hinge along the closed door
+  const open = o.outward ? { x: -n.x, y: -n.y } : n;
   const r = o.width * view.scale;
-  const leaf = { x: s1.x + n.x * r, y: s1.y + n.y * r };
+  const leaf = { x: hinge.x + open.x * r, y: hinge.y + open.y * r };
   ctx.lineWidth = selected ? 3 : 2;
-  line(s1, leaf);
+  line(hinge, leaf);
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 3]);
-  const from = Math.atan2(n.y, n.x);
-  const to = Math.atan2(g.u.y, g.u.x);
+  const from = Math.atan2(open.y, open.x);
+  const to = Math.atan2(closed.y, closed.x);
   let sweep = to - from;
   while (sweep > Math.PI) sweep -= 2 * Math.PI;
   while (sweep < -Math.PI) sweep += 2 * Math.PI;
   ctx.beginPath();
-  ctx.arc(s1.x, s1.y, r, from, to, sweep < 0);
+  ctx.arc(hinge.x, hinge.y, r, from, to, sweep < 0);
   ctx.stroke();
   ctx.setLineDash([]);
 }
@@ -459,21 +486,39 @@ function renderSheet(): void {
         o.at = Math.max(0, o.at + (o.width - m) / 2);
         o.width = m;
         o.measured = true;
-        save(plan);
+        commit();
         closeSheet();
         render();
       }) +
-      `<div class="row"><button id="delO" class="link danger">Delete</button></div>`;
+      `<div class="row">` +
+      (o.type === 'door'
+        ? `<button id="flipHinge" class="icon" title="Hinge on the other side"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 20V8"/><path d="M5 8a12 12 0 0 1 12 12" stroke-dasharray="2 2.2"/><path d="M13 4h8m-2-2 2 2-2 2M21 9h-8m2-2-2 2 2 2"/></svg>Hinge side</button>` +
+          `<button id="flipSwing" class="icon" title="Swing ${o.outward ? 'into' : 'out of'} the room"><svg viewBox="0 0 24 24"><path d="M2 12h20M6 12V3M6 12v9"/><path d="M6 3a9 9 0 0 1 9 9" stroke-dasharray="2 2.2"/><path d="M6 21a9 9 0 0 0 9-9" stroke-dasharray="2 2.2"/></svg>Swing ${o.outward ? 'in' : 'out'}</button>`
+        : '') +
+      `<button id="delO" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
+      `</div>`;
     const setType = (type: Opening['type']) => {
       o.type = type;
-      save(plan);
+      commit();
       sheet.dataset.key = '';
       render();
       renderUi();
     };
     el('isDoor').onclick = () => setType('door');
     el('isWindow').onclick = () => setType('window');
+    const flip = (key: 'hingeAtB' | 'outward') => {
+      o[key] = !o[key] || undefined;
+      commit();
+      sheet.dataset.key = '';
+      render();
+      renderUi();
+    };
+    if (o.type === 'door') {
+      el('flipHinge').onclick = () => flip('hingeAtB');
+      el('flipSwing').onclick = () => flip('outward');
+    }
     el('delO').onclick = () => {
+      if (!confirm(`Delete this ${o.type}?`)) return;
       plan.openings = plan.openings.filter((x) => x.id !== sel.id);
       closeSheet();
       resolve();
@@ -491,6 +536,7 @@ function renderSheet(): void {
       resolve();
     };
     el('del').onclick = () => {
+      if (!confirm('Delete this corner and the walls on it?')) return;
       removePoint(plan, sel.id);
       closeSheet();
       resolve();
@@ -565,7 +611,7 @@ function openingTap(pos: Vec, tol: number): void {
   plan.openings.push(o);
   tool = null;
   selection = { kind: 'opening', id: o.id };
-  save(plan);
+  commit();
   render();
   renderUi();
 }
@@ -688,6 +734,16 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeSheet();
     return;
   }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    restore(e.shiftKey ? history.redo() : history.undo());
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    restore(history.redo());
+    return;
+  }
   if (e.key === 'Escape' && tool) setTool(null);
   else if (e.key === 'Escape') closeSheet();
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
@@ -731,6 +787,11 @@ el('scan').onclick = async () => {
     showScanMsg((err as Error).message);
   }
 };
+
+// ---------- undo / redo ----------
+
+el('undo').onclick = () => restore(history.undo());
+el('redo').onclick = () => restore(history.redo());
 
 // ---------- menu ----------
 
@@ -833,3 +894,6 @@ el('driveLoad').onclick = async () => {
 resizeCanvas();
 fit();
 resolve();
+history.reset(JSON.stringify(plan));
+el<HTMLButtonElement>('undo').disabled = true;
+el<HTMLButtonElement>('redo').disabled = true;

@@ -43,6 +43,10 @@ export interface Opening {
   width: number;
   /** The width was typed in: it stays when the wall is rescaled. */
   measured?: boolean;
+  /** Door hinged at the `b` end of the wall instead of the `a` end. */
+  hingeAtB?: boolean;
+  /** Door swings out of the room instead of into it. */
+  outward?: boolean;
 }
 
 export interface Plan {
