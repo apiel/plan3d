@@ -5,8 +5,9 @@
 // depth.html for the raw test). Keyframes are collected while the phone
 // moves; on Finish the outline is extracted (src/scan/extract.ts), added to
 // the saved plan, and the editor shows it.
-// Optionally, the user aims the centre crosshair at corners and at door and
-// window edges and taps a button to mark them; the extraction uses them.
+// Optionally, the user aims the centre crosshair at corners, at door and
+// window edges, and at stairs (both ends of one end step's edge, then the
+// edge at the other end) and taps a button to mark them; the extraction uses them.
 // Marks are drawn over the camera view, and the one under the cross can be
 // removed.
 
@@ -29,7 +30,10 @@ const NEAR = 0.05; // metres: marks closer to the camera plane than this are not
 const TARGET_PX = 40; // a mark this close to the cross on screen is the one Remove deletes
 
 type Opening = Marks['openings'][number];
-type Mark = { kind: 'corner'; p: Vec3 } | { kind: 'opening'; o: Opening };
+type StairMark = NonNullable<Marks['stairs']>[number];
+type Mark = { kind: 'corner'; p: Vec3 } | { kind: 'opening'; o: Opening } | { kind: 'stair'; s: StairMark };
+
+const STEP_RISE = 0.175; // metres, to tell how many steps while the stairs are being marked
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 const overlay = $('scanOverlay');
@@ -42,6 +46,7 @@ const cross = $('cross');
 const aimText = $('aimText');
 const removeBtn = $<HTMLButtonElement>('markRemove');
 const openingBtn = { door: $<HTMLButtonElement>('markDoor'), window: $<HTMLButtonElement>('markWindow') };
+const stairBtn = $<HTMLButtonElement>('markStair');
 
 const frames: Keyframe[] = [];
 let session: XRSession | null = null;
@@ -53,15 +58,18 @@ let totalPoints = 0;
 let message = '';
 let messageUntil = 0;
 let added = false;
+/** What the editor should say about the room just added: what was found, what could not be used. */
+let note = '';
 /** World point under the crosshair in the latest frame, if depth had one. */
 let aim: Vec3 | null = null;
 /** Where the phone was in the latest frame. */
 let camPos: Vec3 = [0, 0, 0];
-const marks: Marks = { corners: [], openings: [] };
+const marks: Marks = { corners: [], openings: [], stairs: [] };
+const stairMarks = marks.stairs!;
 /** Marks in the order they were made, for undo. */
 const placed: Mark[] = [];
-/** First edge of a door or window, waiting for the second. */
-let pending: { type: 'door' | 'window'; a: Vec3; camA: Vec3 } | null = null;
+/** First edge of a door or window waiting for the second; for stairs, the first one or two marks waiting for the rest. */
+let pending: { type: 'door' | 'window' | 'stair'; a: Vec3; camA: Vec3; b?: Vec3 } | null = null;
 /** The mark under the cross in the latest frame. */
 let target: Mark | null = null;
 
@@ -82,17 +90,19 @@ export async function missingForScan(): Promise<string | null> {
   return null;
 }
 
-/** Starts the AR scan. `onEnd` runs when it closes, with whether a room was added to the saved plan. */
-export async function startScan(onEnd: (added: boolean) => void): Promise<void> {
+/** Starts the AR scan. `onEnd` runs when it closes, with whether a room was added to the saved plan and what to tell about it. */
+export async function startScan(onEnd: (added: boolean, note: string) => void): Promise<void> {
   frames.length = 0;
   last = null;
   origin = null;
   totalPoints = 0;
   added = false;
+  note = '';
   aim = null;
   target = null;
   marks.corners.length = 0;
   marks.openings.length = 0;
+  stairMarks.length = 0;
   placed.length = 0;
   setPending(null);
   trailCtx.clearRect(0, 0, trail.width, trail.height);
@@ -119,7 +129,7 @@ export async function startScan(onEnd: (added: boolean) => void): Promise<void> 
   session.addEventListener('end', () => {
     overlay.classList.remove('on');
     session = null;
-    onEnd(added);
+    onEnd(added, note);
   });
   session.requestAnimationFrame(onFrame);
 }
@@ -161,11 +171,7 @@ function onFrame(_t: number, frame: XRFrame): void {
   aim = depth ? aimAt(view, depth) : null;
   cross.classList.toggle('ok', !!aim);
   // while a door or window waits for its second side, show its width so far instead of the distance
-  aimText.textContent = !aim
-    ? ''
-    : pending
-      ? `${pending.type} ${Math.round(Math.hypot(aim[0] - pending.a[0], aim[2] - pending.a[2]) * 100)} cm`
-      : `${Math.hypot(aim[0] - pos[0], aim[1] - pos[1], aim[2] - pos[2]).toFixed(2)} m`;
+  aimText.textContent = !aim ? '' : pending ? pendingText(pending, aim) : `${Math.hypot(aim[0] - pos[0], aim[1] - pos[1], aim[2] - pos[2]).toFixed(2)} m`;
 
   if (depth && frames.length < MAX_FRAMES && shouldKeep(pos, fwd)) {
     const kf = sample(view, depth, pos);
@@ -218,6 +224,16 @@ function aimAt(view: XRView, depth: XRCPUDepthInformation): Vec3 | null {
 
 // ---------- marks ----------
 
+/** Under the cross while marking: the width so far, or for stairs at their other end, how long and how many steps. */
+function pendingText(p: NonNullable<typeof pending>, at: Vec3): string {
+  if (p.type !== 'stair' || !p.b) return `${p.type === 'stair' ? 'stairs' : p.type} ${Math.round(Math.hypot(at[0] - p.a[0], at[2] - p.a[2]) * 100)} cm`;
+  const mid: Vec3 = [(p.a[0] + p.b[0]) / 2, (p.a[1] + p.b[1]) / 2, (p.a[2] + p.b[2]) / 2];
+  return `stairs ${Math.hypot(at[0] - mid[0], at[2] - mid[2]).toFixed(2)} m, ${stepsBetween(mid, at)} steps`;
+}
+
+/** Steps between the edge of the first step and the edge where the flight arrives, from the height between them. */
+const stepsBetween = (a: Vec3, b: Vec3): number => Math.max(2, Math.round(Math.abs(b[1] - a[1]) / STEP_RISE) + 1);
+
 function setPending(p: typeof pending): void {
   pending = p;
   for (const type of ['door', 'window'] as const) {
@@ -225,6 +241,28 @@ function setPending(p: typeof pending): void {
     openingBtn[type].classList.toggle('pending', waiting);
     openingBtn[type].textContent = (type === 'door' ? 'Door' : 'Window') + (waiting ? ' 2nd side' : '');
   }
+  const stairs = pending?.type === 'stair';
+  stairBtn.classList.toggle('pending', stairs);
+  stairBtn.textContent = !stairs ? 'Stairs' : pending?.b ? 'Stairs end' : 'Stairs 2nd side';
+}
+
+/** Stairs take three marks: both ends of the edge of the step at one end, then the edge at the other end. */
+function markStair(): void {
+  if (!aim) return flash('No depth under the cross. Step back a little or aim again.');
+  if (pending?.type !== 'stair') {
+    setPending({ type: 'stair', a: aim, camA: camPos });
+    return;
+  }
+  if (!pending.b) {
+    setPending({ ...pending, b: aim });
+    return;
+  }
+  const st: StairMark = { a: pending.a, b: pending.b, end: aim };
+  stairMarks.push(st);
+  placed.push({ kind: 'stair', s: st });
+  setPending(null);
+  const mid: Vec3 = [(st.a[0] + st.b[0]) / 2, (st.a[1] + st.b[1]) / 2, (st.a[2] + st.b[2]) / 2];
+  flash(`Stairs marked: about ${Math.round(Math.hypot(st.b[0] - st.a[0], st.b[2] - st.a[2]) * 100)} cm wide, ${stepsBetween(mid, st.end)} steps. Fix them in the editor if needed.`);
 }
 
 function markCorner(): void {
@@ -250,14 +288,17 @@ function markOpening(type: 'door' | 'window'): void {
 function removeMark(mark: Mark): void {
   placed.splice(placed.indexOf(mark), 1);
   if (mark.kind === 'corner') marks.corners.splice(marks.corners.indexOf(mark.p), 1);
+  else if (mark.kind === 'stair') stairMarks.splice(stairMarks.indexOf(mark.s), 1);
   else marks.openings.splice(marks.openings.indexOf(mark.o), 1);
-  flash(`${mark.kind === 'corner' ? 'Corner' : mark.o.type === 'door' ? 'Door' : 'Window'} removed.`);
+  flash(`${mark.kind === 'corner' ? 'Corner' : mark.kind === 'stair' ? 'Stairs' : mark.o.type === 'door' ? 'Door' : 'Window'} removed.`);
 }
 
-/** One button, three jobs: cancel a half-placed door or window, remove the mark under the cross, or undo the last mark. */
+const pendingName = (type: 'door' | 'window' | 'stair'): string => (type === 'door' ? 'Door' : type === 'window' ? 'Window' : 'Stairs');
+
+/** One button, three jobs: cancel a half-placed door, window or stairs, remove the mark under the cross, or undo the last mark. */
 function onRemove(): void {
   if (pending) {
-    flash(`${pending.type === 'door' ? 'Door' : 'Window'} cancelled.`);
+    flash(`${pendingName(pending.type)} cancelled.`);
     setPending(null);
   } else if (target) {
     removeMark(target);
@@ -270,7 +311,7 @@ function onRemove(): void {
 }
 
 function updateRemoveButton(): void {
-  const text = pending ? `Cancel ${pending.type}` : target ? 'Remove' : 'Undo';
+  const text = pending ? `Cancel ${pending.type === 'stair' ? 'stairs' : pending.type}` : target ? 'Remove' : 'Undo';
   if (removeBtn.textContent !== text) removeBtn.textContent = text;
   removeBtn.classList.toggle('pending', !!pending || !!target);
 }
@@ -321,7 +362,12 @@ function drawMarks(view: XRView): void {
   let best = TARGET_PX;
   target = null;
   const shapes = placed.map((mark) => {
-    const seg = mark.kind === 'corner' ? onScreen(view, mark.p, mark.p, w, h) : onScreen(view, mark.o.a, mark.o.b, w, h);
+    const seg =
+      mark.kind === 'corner'
+        ? onScreen(view, mark.p, mark.p, w, h)
+        : mark.kind === 'stair'
+          ? onScreen(view, mark.s.a, mark.s.b, w, h)
+          : onScreen(view, mark.o.a, mark.o.b, w, h);
     if (seg && !pending) {
       const d = distToSegment(cx, cy, seg);
       if (d < best) {
@@ -336,7 +382,7 @@ function drawMarks(view: XRView): void {
   for (const { mark, seg } of shapes) {
     if (!seg) continue;
     const hit = mark === target;
-    const color = hit ? '#ef4444' : mark.kind === 'corner' ? '#f472b6' : mark.o.type === 'door' ? '#60a5fa' : '#22d3ee';
+    const color = hit ? '#ef4444' : mark.kind === 'corner' ? '#f472b6' : mark.kind === 'stair' ? '#a78bfa' : mark.o.type === 'door' ? '#60a5fa' : '#22d3ee';
     arCtx.strokeStyle = color;
     arCtx.fillStyle = color;
     if (mark.kind === 'corner') {
@@ -349,10 +395,26 @@ function drawMarks(view: XRView): void {
       arCtx.moveTo(seg[0][0], seg[0][1]);
       arCtx.lineTo(seg[1][0], seg[1][1]);
       arCtx.stroke();
+      if (mark.kind === 'stair') drawStairRun(view, mark.s.a, mark.s.b, mark.s.end, w, h, color, false);
     }
   }
 
-  // the door or window being placed: from its first side to the cross
+  // stairs being placed: their first edge, and a dashed run up to the cross
+  if (pending?.type === 'stair' && pending.b) {
+    const seg = onScreen(view, pending.a, pending.b, w, h);
+    if (seg) {
+      arCtx.strokeStyle = '#f59e0b';
+      arCtx.lineWidth = 6;
+      arCtx.beginPath();
+      arCtx.moveTo(seg[0][0], seg[0][1]);
+      arCtx.lineTo(seg[1][0], seg[1][1]);
+      arCtx.stroke();
+    }
+    if (aim) drawStairRun(view, pending.a, pending.b, aim, w, h, '#f59e0b', true);
+    return;
+  }
+
+  // the door, window or first stairs edge being placed: from its first side to the cross
   if (pending) {
     const end = aim ?? pending.a;
     const seg = onScreen(view, pending.a, end, w, h);
@@ -372,6 +434,25 @@ function drawMarks(view: XRView): void {
       arCtx.fill();
     }
   }
+}
+
+/** The run of a flight over the camera view: dashed from the middle of the marked edge to the other end. */
+function drawStairRun(view: XRView, a: Vec3, b: Vec3, end: Vec3, w: number, h: number, color: string, live: boolean): void {
+  const mid: Vec3 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  const seg = onScreen(view, mid, end, w, h);
+  if (!seg) return;
+  arCtx.strokeStyle = color;
+  arCtx.fillStyle = color;
+  arCtx.lineWidth = live ? 5 : 4;
+  arCtx.setLineDash([12, 8]);
+  arCtx.beginPath();
+  arCtx.moveTo(seg[0][0], seg[0][1]);
+  arCtx.lineTo(seg[1][0], seg[1][1]);
+  arCtx.stroke();
+  arCtx.setLineDash([]);
+  arCtx.beginPath();
+  arCtx.arc(seg[1][0], seg[1][1], 7, 0, Math.PI * 2);
+  arCtx.fill();
 }
 
 // ---------- minimap ----------
@@ -421,6 +502,18 @@ function drawMap(pos: Vec3, fwd: Vec3): void {
     mapCtx.lineTo(bx, by);
     mapCtx.stroke();
   }
+  mapCtx.strokeStyle = '#a78bfa';
+  for (const st of stairMarks) {
+    const [ax, ay] = mapXY(st.a[0], st.a[2]);
+    const [bx, by] = mapXY(st.b[0], st.b[2]);
+    const [ex, ey] = mapXY(st.end[0], st.end[2]);
+    mapCtx.beginPath();
+    mapCtx.moveTo(ax, ay);
+    mapCtx.lineTo(bx, by);
+    mapCtx.moveTo((ax + bx) / 2, (ay + by) / 2);
+    mapCtx.lineTo(ex, ey);
+    mapCtx.stroke();
+  }
   if (pending) {
     const [x, y] = mapXY(pending.a[0], pending.a[2]);
     mapCtx.fillStyle = '#f59e0b';
@@ -433,18 +526,24 @@ function drawMap(pos: Vec3, fwd: Vec3): void {
 function updateHud(depth: XRCPUDepthInformation | null): void {
   const lines: string[] = [];
   if (!depth) lines.push('Waiting for depth... move the phone slowly');
-  else lines.push(`${frames.length} views · ${(totalPoints / 1000).toFixed(1)}k points · ${marks.corners.length} corners · ${marks.openings.length} doors/windows`);
+  else lines.push(`${frames.length} views · ${(totalPoints / 1000).toFixed(1)}k points · ${marks.corners.length} corners · ${marks.openings.length} doors/windows${stairMarks.length ? ` · ${stairMarks.length} stairs` : ''}`);
   if (performance.now() < messageUntil) {
     lines.push(message);
+  } else if (pending?.type === 'stair') {
+    lines.push(
+      pending.b
+        ? 'Stairs: now aim at the edge at the other end of the flight (the top edge where the stairs arrive, or the first step if you started at the top) and tap "Stairs end".'
+        : 'Stairs: first side set. Aim at the other end of the same step edge and tap "Stairs 2nd side", or "Cancel stairs".'
+    );
   } else if (pending) {
-    const name = pending.type === 'door' ? 'Door' : 'Window';
+    const name = pendingName(pending.type);
     lines.push(`${name}: first side set. Aim at the wall just beside the other side and tap "${name} 2nd side", or "Cancel ${pending.type}".`);
   } else if (target) {
     lines.push('Tap Remove to delete the red mark.');
   } else {
     lines.push(
       'Turn slowly on the spot, aiming at the walls, the floor and the ceiling. Then walk around the room, and into corners and alcoves. Finish when the green outline looks complete.\n' +
-        'Optional: put the cross on each corner and tap Corner. For a door or window, aim at the wall just beside each side of the frame and tap Door (or Window) at each. Aim at a mark and tap Remove to delete it.'
+        'Optional: put the cross on each corner and tap Corner. For a door or window, aim at the wall just beside each side of the frame and tap Door (or Window) at each. For stairs, tap Stairs at the left and right end of the bottom step\'s edge, then at the top edge. Aim at a mark and tap Remove to delete it.'
     );
   }
   hud.textContent = lines.join('\n');
@@ -464,6 +563,7 @@ function addRoomToPlan(scan: RoomScan): void {
   plan.points.push(...room.points);
   plan.walls.push(...room.walls);
   plan.constraints.push(...room.constraints);
+  for (const st of scan.stairs) plan.stairs.push({ id: newId(), ...st, x: st.x + shift });
   // furniture boxes (scan.furniture) are left out of the plan for now
   for (const o of scan.openings) {
     const a = room.points[o.wall].id;
@@ -491,6 +591,13 @@ async function finish(): Promise<void> {
   }
   addRoomToPlan(room);
   added = true;
+  const lost = stairMarks.length - room.stairs.length;
+  note = [
+    room.found ? `${room.found} door${room.found > 1 ? 's' : ''} found from the depth (not marked): tap and delete any that is wrong.` : '',
+    lost ? `${lost} marked stairs could not be used: the marks came out too narrow or too short. Aim at the step edges, not the wall or the floor behind, or add them with the stairs tool.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   await session?.end();
 }
 
@@ -502,7 +609,9 @@ export function downloadScan(): void {
     version: 2,
     date: new Date().toISOString(),
     frames: frames.map((f) => ({ cam: f.cam.map(round), points: Array.from(f.points, round) })),
-    marks: { corners: marks.corners.map(r3), openings: marks.openings.map((o) => ({ type: o.type, a: r3(o.a), b: r3(o.b), camA: o.camA && r3(o.camA), camB: o.camB && r3(o.camB) })) },
+    marks: { corners: marks.corners.map(r3), openings: marks.openings.map((o) => ({ type: o.type, a: r3(o.a), b: r3(o.b), camA: o.camA && r3(o.camA), camB: o.camB && r3(o.camB) })),
+      stairs: stairMarks.map((st) => ({ a: r3(st.a), b: r3(st.b), end: r3(st.end) })),
+    },
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   const a = document.createElement('a');
@@ -515,6 +624,7 @@ export function downloadScan(): void {
 $('markCorner').addEventListener('click', markCorner);
 openingBtn.door.addEventListener('click', () => markOpening('door'));
 openingBtn.window.addEventListener('click', () => markOpening('window'));
+stairBtn.addEventListener('click', markStair);
 removeBtn.addEventListener('click', onRemove);
 $('finish').addEventListener('click', () => void finish());
 $('cancel').addEventListener('click', () => void session?.end());

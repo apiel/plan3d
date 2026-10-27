@@ -15,7 +15,7 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 ## Plan editor
 
-- [x] Detect doors from the scan instead of leaving them as ragged edges (`seeThroughOpenings`, `cutNecks` in `src/scan/extract.ts`): free space seen through a doorway is cut off at necks under ~1.1 m, and stretches of wall the phone saw through become doors (open at hip and chest height) or windows (wall under the sill). Synthetic tests only. A closed door, or glass that stops the depth, cannot be seen this way: mark those. Rooms narrower than ~1.1 m skip the cut. Check on real scans: `NECK`, `SEE_*`, `LOW_BAND`/`MID_BAND`, `JOG`.
+- [x] Detect doors from the scan instead of leaving them as ragged edges (`seeThroughOpenings`, `cutNecks` in `src/scan/extract.ts`): free space seen through a doorway is cut off at necks under ~1.1 m, and stretches of wall the phone saw through at hip and chest height become doors. Window detection (wall under the sill, open above) was removed after the first real try: it put windows all over the plan (depth noise past the walls). Stairs from the scan did not show up in that try either: **need the scan data file** to see why. Synthetic tests only. A closed door, or glass that stops the depth, cannot be seen this way: mark those. Rooms narrower than ~1.1 m skip the cut. Check on real scans: `NECK`, `SEE_*`, `LOW_BAND`/`MID_BAND`, `JOG`.
 - [ ] Doors and windows: openings come from scan marks, drawn with plan symbols; type, width and delete in the editor. Added by hand with the door/window tools. Hinge side and swing flip done, widths shown on the plan. Still missing: slide it along the wall, measured sizes as constraints, window sill and height.
 - [x] Join rooms through a shared door (`src/rooms.ts`): select a door, Join rooms, tap the same door in the other room; the second room moves and turns onto it (one wall thickness apart) and stays attached when measurements rescale it. Not tried on the phone.
 - [x] More constraints: parallel walls, equal length (wall panel: Parallel to… / Same length…, then tap the other wall), fixed angle (corner panel: Angle field). Not done: horizontal/vertical.
@@ -61,7 +61,7 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - give name to room
 
-- ~~we need to be able to place stair case~~ done: stairs tool (straight flight: width, length, steps, turn, up/down, drag to move). Not yet: L/U-shaped stairs, linking floors.
+- ~~we need to be able to place stair case~~ done: stairs tool in the editor (straight flight: width, length, steps, turn, up/down, drag to move), and **Stairs** in the scan (3 marks: both ends of the bottom step's edge, then the top edge; steps counted from the height). Scan marks not tried on the phone. Not yet: L/U-shaped stairs, linking floors.
 
 - ~~ctrl+z ctrl+shift+z should work for undo redo~~ done.
 
@@ -70,3 +70,8 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 
 - How can i share a plan with someone...?
+
+- Now i was adding manually a wall in middle of another wall. Would be great to see his distance from the other walls...
+
+
+- Would there be way to kind of suggest door, windows and corner in the scan view? and then we could apply them or not

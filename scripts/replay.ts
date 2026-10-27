@@ -15,7 +15,7 @@ const raw = JSON.parse(readFileSync(file, 'utf8')) as { frames: { cam: number[];
 const frames: Keyframe[] = raw.frames.map((f) => ({ cam: [f.cam[0], f.cam[1], f.cam[2]], points: Float32Array.from(f.points) }));
 const marks: Marks = raw.marks ?? { corners: [], openings: [] }; // version 1 files have none
 const total = frames.reduce((n, f) => n + f.points.length / 3, 0);
-console.log(`${frames.length} keyframes, ${total} points, ${marks.corners.length} corners and ${marks.openings.length} doors/windows marked`);
+console.log(`${frames.length} keyframes, ${total} points, ${marks.corners.length} corners, ${marks.openings.length} doors/windows and ${marks.stairs?.length ?? 0} stairs marked`);
 
 const t0 = performance.now();
 const room = extractRoom(frames, marks);
@@ -27,6 +27,7 @@ if (!room) {
 console.log(`floor ${room.floorY.toFixed(2)} m, ceiling ${room.ceilingY.toFixed(2)} m, height ${(room.ceilingY - room.floorY).toFixed(2)} m`);
 console.log('walls (cm):', room.corners.map((p, i) => Math.round(Math.hypot(room.corners[(i + 1) % room.corners.length].x - p.x, room.corners[(i + 1) % room.corners.length].y - p.y) * 100)).join(', '));
 for (const o of room.openings) console.log(`${o.type} ${Math.round((o.to - o.from) * 100)} cm on wall ${o.wall}, ${Math.round(o.from * 100)} cm from its start`);
+for (const st of room.stairs) console.log(`stairs ${Math.round(st.width * 100)} x ${Math.round(st.length * 100)} cm, ${st.steps} steps, going up towards ${Math.round(st.angle)}°`);
 for (const f of room.furniture) console.log(`furniture ${Math.round(f.w * 100)}×${Math.round(f.d * 100)} cm, ${Math.round(f.h * 100)} cm high at (${f.x.toFixed(2)}, ${f.y.toFixed(2)})`);
 
 // left: raw top-down points (grey all, green near wall height); right: result

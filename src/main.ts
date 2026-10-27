@@ -1160,13 +1160,17 @@ el('scan').onclick = async () => {
   if (missing) return showScanMsg(missing);
   showScanMsg(null);
   try {
-    await startScan((added) => {
+    await startScan((added, note) => {
       el('scanData').hidden = !hasScanData();
       if (!added) return;
       plan = load();
       selection = null;
       fit();
       resolve();
+      if (note) {
+        showScanMsg(note);
+        setTimeout(() => showScanMsg(null), 10000);
+      }
     });
   } catch (err) {
     showScanMsg((err as Error).message);

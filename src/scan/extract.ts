@@ -14,12 +14,12 @@
 //  5. Points between floor and the wall band, away from the walls, are
 //     grouped into furniture boxes.
 //
-//  6. Doorways and windows nobody marked are found where the phone saw
-//     through a wall: past the wall at hip and chest height is an open door,
-//     past it at chest height only (wall below the sill) is a window.
+//  6. Doorways nobody marked are found where the phone saw through a wall,
+//     at hip and at chest height. Windows are left to marks: on real phone
+//     depth, noise past a wall at chest height looked like windows everywhere.
 //
-// The user can also mark corners, doors and windows with the crosshair while
-// scanning. Three or more marked corners replace the traced outline (each
+// The user can also mark corners, doors, windows and stairs with the crosshair
+// while scanning. Three or more marked corners replace the traced outline (each
 // wall between two marks is still fitted to the depth points), and door and
 // window edges become openings on the nearest wall.
 
@@ -47,6 +47,18 @@ export interface Marks {
   corners: Vec3[];
   /** Left and right edge of each door or window, and where the phone was when each was marked. */
   openings: { type: 'door' | 'window'; a: Vec3; b: Vec3; camA?: Vec3; camB?: Vec3 }[];
+  /** Straight stairs: the two ends of the edge of one end step (`a`, `b`), and a point on the edge at the other end. */
+  stairs?: { a: Vec3; b: Vec3; end: Vec3 }[];
+}
+
+/** A straight flight in plan metres, like the editor's: centre, size, `angle` degrees pointing up the flight. */
+export interface RoomStair {
+  x: number;
+  y: number;
+  width: number;
+  length: number;
+  angle: number;
+  steps: number;
 }
 
 export interface RoomOpening {
@@ -62,6 +74,9 @@ export interface RoomScan {
   corners: Vec[];
   furniture: Box[];
   openings: RoomOpening[];
+  /** How many of `openings` were found from the depth rather than marked. */
+  found: number;
+  stairs: RoomStair[];
   floorY: number;
   ceilingY: number;
 }
@@ -90,16 +105,17 @@ const OPENING_REACH = 0.75; // door/window marks inside the room further than th
 const RECESS_MAX = 1.0; // a mark this far behind its wall is a window deep in its recess; further, depth went through the glass
 const OPENING_MIN = 0.3; // narrower openings are a slip of the finger
 // free space seen through a doorway joins the room to the next one through a neck this narrow (half width, metres): cut it
+const STAIR_CLEAR = 0.5; // metres around marked stairs where seeing through a wall is the stairwell, not a doorway
+const STEP_RISE = 0.175; // metres: a usual step height, to count steps from the height a flight climbs
 const NECK = 0.55;
 const NECK_SLACK = 1; // cells
 const SEE_BIN = 0.1; // metres along a wall per bin when looking for openings
 const SEE_AT = 0.12; // a point this close to a wall's line is the wall
-const SEE_BEHIND = 0.25; // a point this far past a wall was seen through it
+const SEE_BEHIND = 0.4; // a point this far past a wall was seen through it (phone depth is off by 10-30 cm a few metres away)
 const SEE_MIN = 3; // points over a whole opening, per height band, before it counts
 const DOOR_WIDTH = [0.6, 1.5]; // metres: narrower is a gap in the data, wider an open plan, not a door
-const WINDOW_WIDTH = [0.4, 3];
-const LOW_BAND = [0.2, 0.8]; // metres above the floor: under any window sill, open only at a door
-const MID_BAND = [1.1, 1.8]; // metres above the floor: open at a door and at a window
+const LOW_BAND = [0.2, 0.8]; // metres above the floor: under any window sill, so open only at a door
+const MID_BAND = [1.1, 1.8]; // metres above the floor: a doorway is open here too
 
 export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomScan | null {
   // First pass finds which way the walls run. Rotating the capture to match
@@ -117,6 +133,7 @@ export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomSca
       camA: o.camA && rotate(o.camA, c, s),
       camB: o.camB && rotate(o.camB, c, s),
     })),
+    stairs: marks.stairs?.map((st) => ({ a: rotate(st.a, c, s), b: rotate(st.b, c, s), end: rotate(st.end, c, s) })),
   }, true);
   return second ?? first;
 }
@@ -274,14 +291,23 @@ function run(frames: Keyframe[], marks: Marks, cutDoors: boolean): Pass | null {
   const placed = marks.openings.flatMap(
     (o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners, o.camA && toPlan(o.camA), o.camB && toPlan(o.camB)) ?? []
   );
-  // the user's marks win over what the depth suggests
-  const seen = seeThroughOpenings(frames, corners, toPlan, floorY).filter(
-    (d) => !placed.some((m) => m.wall === d.wall && m.from < d.to && d.from < m.to)
-  );
+  const stairs = (marks.stairs ?? []).flatMap((st) => placeStair(toPlan(st.a), toPlan(st.b), toPlan(st.end), (st.a[1] + st.b[1]) / 2, st.end[1]) ?? []);
+  // the user's marks win over what the depth suggests; and a stairwell is seen through like a
+  // doorway (stairs going down from here), so nothing is found next to marked stairs
+  const seen = seeThroughOpenings(frames, corners, toPlan, floorY).filter((d) => {
+    if (placed.some((m) => m.wall === d.wall && m.from < d.to && d.from < m.to)) return false;
+    const a = corners[d.wall];
+    const b = corners[(d.wall + 1) % corners.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const along = (t: number): Vec => ({ x: a.x + ((b.x - a.x) * t) / len, y: a.y + ((b.y - a.y) * t) / len });
+    return !stairs.some((st) => [d.from, (d.from + d.to) / 2, d.to].some((t) => nearStair(st, along(t), STAIR_CLEAR)));
+  });
   return {
     corners,
     furniture: boxes.map((b) => snapBoxToWalls({ ...b, x: b.x - cx, y: b.y - cy }, corners)),
     openings: [...placed, ...seen],
+    found: seen.length,
+    stairs,
     floorY,
     ceilingY,
     phi: snapped.phi,
@@ -422,12 +448,53 @@ function placeOpening(type: 'door' | 'window', a: Vec, b: Vec, corners: Vec[], c
 }
 
 /**
- * Doorways and windows from where the phone saw through the walls. Along each
- * wall, in bins, points on the wall's line count as wall and points past it
- * (reached through it, the ray from the phone crossing that wall first) count
- * as open. Open at hip and chest height is a doorway; wall at hip height and
- * open at chest height is a window. A closed door or a window whose glass
- * stops the depth is flush with its wall and cannot be seen this way.
+ * A straight flight from three marks: `a` and `b` on the edge of one end step,
+ * `end` on the edge at the other end, with their heights. The higher end is
+ * the top, so the same taps work standing at the bottom or at the top. The
+ * edge of the first step and the edge where the flight arrives are one rise
+ * short of each other's height difference, so steps = climb / rise + 1.
+ */
+function placeStair(a: Vec, b: Vec, end: Vec, edgeY: number, endY: number): RoomStair | undefined {
+  const width = Math.hypot(b.x - a.x, b.y - a.y);
+  if (width < 0.3) return undefined;
+  const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  // along the flight: across the marked edge, towards the other end
+  let n = { x: -(b.y - a.y) / width, y: (b.x - a.x) / width };
+  let length = (end.x - m.x) * n.x + (end.y - m.y) * n.y;
+  if (length < 0) {
+    n = { x: -n.x, y: -n.y };
+    length = -length;
+  }
+  if (length < 0.5) return undefined;
+  const up = endY >= edgeY ? n : { x: -n.x, y: -n.y };
+  return {
+    x: m.x + (n.x * length) / 2,
+    y: m.y + (n.y * length) / 2,
+    width,
+    length,
+    angle: (Math.atan2(up.y, up.x) * 180) / Math.PI,
+    steps: Math.max(2, Math.round(Math.abs(endY - edgeY) / STEP_RISE) + 1),
+  };
+}
+
+/** Whether a plan point is on a flight or within `margin` metres of it. */
+function nearStair(st: RoomStair, p: Vec, margin: number): boolean {
+  const a = (st.angle * Math.PI) / 180;
+  const dx = p.x - st.x;
+  const dy = p.y - st.y;
+  return (
+    Math.abs(dx * Math.cos(a) + dy * Math.sin(a)) <= st.length / 2 + margin &&
+    Math.abs(-dx * Math.sin(a) + dy * Math.cos(a)) <= st.width / 2 + margin
+  );
+}
+
+/**
+ * Doorways from where the phone saw through the walls. Along each wall, in
+ * bins, points on the wall's line count as wall and points past it (reached
+ * through it, the ray from the phone crossing that wall first) count as open.
+ * Open at hip and at chest height is a doorway. A closed door is flush with
+ * its wall and cannot be seen this way. Windows are not looked for: wall
+ * under the sill and open above looked the same as depth noise past a wall.
  */
 function seeThroughOpenings(frames: Keyframe[], corners: Vec[], toPlan: (p: Vec3) => Vec, floorY: number): RoomOpening[] {
   const n = corners.length;
@@ -475,12 +542,10 @@ function seeThroughOpenings(frames: Keyframe[], corners: Vec[], toPlan: (p: Vec3
     }
   }
 
-  // runs of bins seen through more than seen as wall; then the run's totals decide what it is
+  // runs of bins seen through at hip height more than seen as wall; then the run's totals decide
   const found: RoomOpening[] = [];
   walls.forEach((w, k) => {
-    // open at either height: a window has wall under its sill
-    const open = (i: number) =>
-      (w.low.open[i] > 0 && w.low.open[i] >= 2 * w.low.wall[i]) || (w.mid.open[i] > 0 && w.mid.open[i] >= 2 * w.mid.wall[i]);
+    const open = (i: number) => w.low.open[i] > 0 && w.low.open[i] >= 2 * w.low.wall[i];
     for (let i = 0; i < w.bins; ) {
       if (!open(i)) {
         i++;
@@ -492,16 +557,10 @@ function seeThroughOpenings(frames: Keyframe[], corners: Vec[], toPlan: (p: Vec3
       const sum = (c: Uint16Array) => c.slice(i, j + 1).reduce((t, v) => t + v, 0);
       const low = { open: sum(w.low.open), wall: sum(w.low.wall) };
       const mid = { open: sum(w.mid.open), wall: sum(w.mid.wall) };
-      const type =
-        low.open >= SEE_MIN && low.open >= 2 * low.wall && mid.open >= SEE_MIN
-          ? 'door'
-          : low.wall >= SEE_MIN && low.wall > low.open && mid.open >= SEE_MIN && mid.open >= 2 * mid.wall
-            ? 'window'
-            : undefined;
+      const door = low.open >= SEE_MIN && low.open >= 2 * low.wall && mid.open >= SEE_MIN && mid.open >= 2 * mid.wall;
       const from = i * SEE_BIN;
       const to = Math.min(w.len, (j + 1) * SEE_BIN);
-      const [lo, hi] = type === 'door' ? DOOR_WIDTH : WINDOW_WIDTH;
-      if (type && to - from >= lo && to - from <= hi) found.push({ type, wall: k, from, to });
+      if (door && to - from >= DOOR_WIDTH[0] && to - from <= DOOR_WIDTH[1]) found.push({ type: 'door', wall: k, from, to });
       i = j + 1;
     }
   });

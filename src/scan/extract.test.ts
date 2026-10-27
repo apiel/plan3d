@@ -344,7 +344,7 @@ describe('extractRoom', () => {
     expect(extractRoom([{ cam: [0, 1, 0], points: new Float32Array(30) }])).toBeNull();
   });
 
-  describe('doors and windows nobody marked', () => {
+  describe('doors nobody marked', () => {
     const cams = [
       { x: 1, y: 1 },
       { x: 3, y: 1 },
@@ -365,24 +365,25 @@ describe('extractRoom', () => {
       { a: { x: 4, y: 1.2 }, b: { x: 4, y: 2.0 }, bottom: 0.9, top: 2.1, beyond: box(3.9, 0, 6, 3) },
     ];
 
-    it('finds an open doorway and a window from what the phone saw through the walls', () => {
+    it('finds an open doorway from what the phone saw through the wall, and leaves the window to marks', () => {
       const room = extractRoom(scan(rect, 2.5, cams, 0.02, 1.4, [], holes))!;
       expect(room).not.toBeNull();
+      // what was seen through the doorway and the window is cut off: still a plain rectangle
       expect(room.corners).toHaveLength(4);
-      const door = room.openings.find((o) => o.type === 'door');
-      const win = room.openings.find((o) => o.type === 'window');
-      expect(door).toBeDefined();
-      expect(win).toBeDefined();
-      expect(room.openings).toHaveLength(2);
-      // the extracted outline starts at its own corner: check widths, and that the two are on different walls
-      expect(door!.to - door!.from).toBeGreaterThan(0.7);
-      expect(door!.to - door!.from).toBeLessThan(1.1);
-      expect(win!.to - win!.from).toBeGreaterThan(0.6);
-      expect(win!.to - win!.from).toBeLessThan(1.0);
-      expect(door!.wall).not.toBe(win!.wall);
+      expect(room.openings).toHaveLength(1);
+      expect(room.found).toBe(1);
+      const door = room.openings[0];
+      expect(door.type).toBe('door');
+      expect(door.to - door.from).toBeGreaterThan(0.7);
+      expect(door.to - door.from).toBeLessThan(1.1);
       const len = (i: number) => dist(room.corners[i], room.corners[(i + 1) % room.corners.length]);
-      expect(len(door!.wall)).toBeCloseTo(4, 0);
-      expect(len(win!.wall)).toBeCloseTo(3, 0);
+      expect(len(door.wall)).toBeCloseTo(4, 0);
+    });
+
+    it('does not take depth noise past the walls for openings', () => {
+      // 15 cm of noise on every reading, as a phone gives a few metres away
+      const room = extractRoom(scan(rect, 2.5, cams, 0.15))!;
+      expect(room.openings).toHaveLength(0);
     });
 
     it('sees no openings in a closed room', () => {
@@ -395,8 +396,92 @@ describe('extractRoom', () => {
         openings: [{ type: 'door' as const, a: [1.25, 1.0, 2.95] as [number, number, number], b: [2.05, 1.0, 2.95] as [number, number, number] }],
       };
       const room = extractRoom(scan(rect, 2.5, cams, 0.02, 1.4, [], holes), marks)!;
-      expect(room.openings.filter((o) => o.type === 'door')).toHaveLength(1);
-      expect(room.openings.filter((o) => o.type === 'window')).toHaveLength(1);
+      expect(room.openings).toHaveLength(1);
+      expect(room.found).toBe(0);
     });
+  });
+
+  it('places stairs from three marks, the same from the bottom or from the top', () => {
+    const cams = [
+      { x: 1, y: 1 },
+      { x: 3, y: 1 },
+      { x: 1, y: 2 },
+      { x: 3, y: 2 },
+    ];
+    const frames = scan(rect, 2.5, cams);
+    // a flight along the left wall, 90 cm wide, from z = 0.5 up to z = 2.9; 14 steps of 17.5 cm, the
+    // first step's edge 17.5 cm above the floor, the edge where it arrives 14 x 17.5 = 2.45 m up
+    const lowLeft: [number, number, number] = [0.1, 0.175, 0.5];
+    const lowRight: [number, number, number] = [1.0, 0.175, 0.5];
+    const lowMid: [number, number, number] = [0.6, 0.175, 0.5];
+    const topLeft: [number, number, number] = [0.1, 2.45, 2.9];
+    const topRight: [number, number, number] = [1.0, 2.45, 2.9];
+    const topMid: [number, number, number] = [0.5, 2.45, 2.9];
+    const fromBottom = extractRoom(frames, { corners: [], openings: [], stairs: [{ a: lowLeft, b: lowRight, end: topMid }] })!;
+    const fromTop = extractRoom(frames, { corners: [], openings: [], stairs: [{ a: topRight, b: topLeft, end: lowMid }] })!;
+    expect(fromBottom.stairs).toHaveLength(1);
+    const st = fromBottom.stairs[0];
+    expect(st.width).toBeCloseTo(0.9, 2);
+    expect(st.length).toBeCloseTo(2.4, 2);
+    expect(st.steps).toBe(14);
+    const other = fromTop.stairs[0];
+    expect(other.x).toBeCloseTo(st.x, 2);
+    expect(other.y).toBeCloseTo(st.y, 2);
+    expect(other.steps).toBe(14);
+    // pointing up the same way: the angles agree (modulo a full turn)
+    expect(Math.cos(((other.angle - st.angle) * Math.PI) / 180)).toBeCloseTo(1, 5);
+    // the flight runs along the 3 m side of the room, inside it
+    const ys = fromBottom.corners.map((c) => c.y);
+    const xs = fromBottom.corners.map((c) => c.x);
+    expect(st.x).toBeGreaterThan(Math.min(...xs));
+    expect(st.x).toBeLessThan(Math.max(...xs));
+    expect(st.y).toBeGreaterThan(Math.min(...ys));
+    expect(st.y).toBeLessThan(Math.max(...ys));
+  });
+
+  it('drops stairs marked too narrow or too short', () => {
+    const frames = scan(rect, 2.5, [{ x: 2, y: 1.5 }, { x: 1, y: 1 }, { x: 3, y: 2 }]);
+    const room = extractRoom(frames, {
+      corners: [],
+      openings: [],
+      stairs: [
+        { a: [1, 0.2, 1], b: [1.1, 0.2, 1], end: [1, 1, 2.5] }, // 10 cm wide: a slip
+        { a: [1, 0.2, 1], b: [2, 0.2, 1], end: [1.5, 0.3, 1.2] }, // 20 cm long
+      ],
+    })!;
+    expect(room.stairs).toHaveLength(0);
+  });
+
+  it('does not take a stairwell going down for a doorway when the stairs are marked', () => {
+    const cams = [
+      { x: 1.5, y: 1 },
+      { x: 3, y: 1 },
+      { x: 1.5, y: 2 },
+      { x: 3, y: 2 },
+    ];
+    // stairs go down through an opening in the bottom wall (y = 3): from the room it is open
+    // from the floor up, like a doorway
+    const stairwell: Hole = {
+      a: { x: 0.1, y: 3 },
+      b: { x: 1.0, y: 3 },
+      bottom: -1,
+      top: 2.1,
+      beyond: [
+        { x: 0, y: 2.9 },
+        { x: 1.1, y: 2.9 },
+        { x: 1.1, y: 5 },
+        { x: 0, y: 5 },
+      ],
+    };
+    const frames = scan(rect, 2.5, cams, 0.02, 1.4, [], [stairwell]);
+    expect(extractRoom(frames)!.openings.map((o) => o.type)).toEqual(['door']); // unmarked, it does look like one
+    // marked from the top: the edge where they leave the floor, then the bottom step far below
+    const room = extractRoom(frames, {
+      corners: [],
+      openings: [],
+      stairs: [{ a: [0.1, 0, 2.95], b: [1.0, 0, 2.95], end: [0.5, -2.3, 5.0] }],
+    })!;
+    expect(room.stairs).toHaveLength(1);
+    expect(room.openings).toHaveLength(0);
   });
 });
