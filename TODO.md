@@ -54,5 +54,3 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 
 - 3d plan should also take 8 picture of the room, which can be updated over time, to have a timeline
-
-- ~~need to be able to change door directions~~ done: select a door, "Swap hinge side" / "Swing out of room" (to check on the phone)

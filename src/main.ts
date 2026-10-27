@@ -480,7 +480,6 @@ function renderSheet(): void {
     if (!o) return closeSheet();
     sheet.innerHTML =
       head(o.type === 'door' ? 'Door' : 'Window', o.measured ? '<span class="ok">width measured</span>' : `width estimated ${(o.width * 100).toFixed(0)} cm`) +
-      `<div class="row"><div class="seg"><button id="isDoor" class="${o.type === 'door' ? 'on' : ''}">Door</button><button id="isWindow" class="${o.type === 'window' ? 'on' : ''}">Window</button></div></div>` +
       numberRow(o.width, o.width * 100, (m) => {
         // keep it centred where it was
         o.at = Math.max(0, o.at + (o.width - m) / 2);
@@ -497,15 +496,6 @@ function renderSheet(): void {
         : '') +
       `<button id="delO" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
-    const setType = (type: Opening['type']) => {
-      o.type = type;
-      commit();
-      sheet.dataset.key = '';
-      render();
-      renderUi();
-    };
-    el('isDoor').onclick = () => setType('door');
-    el('isWindow').onclick = () => setType('window');
     const flip = (key: 'hingeAtB' | 'outward') => {
       o[key] = !o[key] || undefined;
       commit();

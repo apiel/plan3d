@@ -52,10 +52,6 @@ button:disabled { opacity: .4; cursor: default; }
 #sheet .row + .row { margin-top: .6rem; }
 #sheet .num { display: flex; align-items: center; gap: .4rem; flex: 1; }
 #sheet input { font: inherit; font-size: 1.4rem; width: 100%; min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: .5rem; padding: .4rem .6rem; }
-#sheet .seg { display: flex; flex: 1; }
-#sheet .seg button { flex: 1; border-radius: 0; }
-#sheet .seg button:first-child { border-radius: .5rem 0 0 .5rem; }
-#sheet .seg button:last-child { border-radius: 0 .5rem .5rem 0; }
 #sheet .icon { display: flex; flex-direction: column; align-items: center; gap: .15rem; min-width: 4.5rem; padding: .4rem .6rem; font-size: .75rem; }
 #sheet .icon svg { width: 1.6rem; height: 1.6rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #sheet .link { background: none; border: 0; padding: .3rem 0; color: var(--muted); text-decoration: underline; }
