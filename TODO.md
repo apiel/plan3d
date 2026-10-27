@@ -17,11 +17,12 @@ Status: the whole chain exists, including furniture boxes and raw scan download/
 
 - [ ] Detect doors from the scan (gaps in the wall band seen from inside) instead of leaving them as ragged edges.
 - [ ] Doors and windows: openings come from scan marks, drawn with plan symbols; type, width and delete in the editor. Added by hand with the door/window tools. Still missing: slide it along the wall, flip the door swing/hinge side, measured sizes as constraints, window sill and height.
-- [ ] Join rooms through a shared door: pick the same door in two rooms, align them, wall thickness between.
+- [x] Join rooms through a shared door (`src/rooms.ts`): select a door, Join rooms, tap the same door in the other room; the second room moves and turns onto it and stays attached when measurements rescale it. Not tried on the phone. Still missing: wall thickness between rooms.
 - [ ] More constraints: parallel walls, horizontal/vertical, equal length, fixed angle (not only 90°).
 - [ ] Highlight which walls are least certain (e.g. from the solver covariance) so you know what to measure next.
-- [ ] Undo/redo.
-- [ ] Multiple rooms and a flat/house level, several plans, rename.
+- [x] Undo/redo (`src/history.ts`).
+- [x] Multiple rooms in one plan: each Scan room adds one, tap the floor of a room to select it and delete it.
+- [ ] Flat/house level, several plans, rename.
 - [x] Touch support on the editor (pinch zoom, pan, bigger tap areas): done, to check on the phone.
 - [ ] Ceiling height and room name per room.
 

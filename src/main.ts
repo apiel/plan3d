@@ -21,6 +21,7 @@ import {
 import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
+import { applyJoins, deleteRoom, insideRoom, joinDoors, joinOf, openingFrame, pruneJoins, roomArea, roomComponents, roomIdsOf, roomLoop, unjoin } from './rooms';
 import { SolveResult, apply, solve } from './solver';
 import { load, save } from './storage';
 
@@ -34,11 +35,12 @@ type Selection =
   | { kind: 'point'; id: string }
   | { kind: 'wall'; a: string; b: string }
   | { kind: 'opening'; id: string }
+  | { kind: 'room'; id: string }
   | null;
 type Tool = 'wall' | 'door' | 'window' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
-  | { kind: 'pan'; x: number; y: number }
+  | { kind: 'pan'; x: number; y: number; moved: boolean }
   | { kind: 'pinch'; d: number; mid: Vec }
   | null;
 
@@ -59,6 +61,8 @@ let cursor: Vec = { x: 0, y: 0 };
 let lastSolve: SolveResult | null = null;
 /** Wall length labels as drawn, so tapping a number edits that wall. */
 let labelBoxes: { a: string; b: string; x: number; y: number; w: number; h: number }[] = [];
+/** Door being joined: the next door tapped, in another room, is moved onto it. */
+let joinFrom: string | null = null;
 /** Fingers or the mouse currently down, for pinch zoom. */
 const pointers = new Map<number, Vec>();
 
@@ -113,6 +117,8 @@ function resolve(): void {
   if (plan.points.length) {
     lastSolve = solve(plan);
     apply(plan, lastSolve);
+    pruneJoins(plan);
+    applyJoins(plan);
   } else {
     lastSolve = null;
   }
@@ -173,32 +179,7 @@ function hitOpening(sx: number, sy: number, tol: number): string | undefined {
 
 // ---------- geometry ----------
 
-/** Whether a point is inside one of the closed rooms (even-odd over all walls). */
-function insideRooms(p: Vec): boolean {
-  let inside = false;
-  for (const w of plan.walls) {
-    const a = pointById(plan, w.a);
-    const b = pointById(plan, w.b);
-    if (!a || !b) continue;
-    if (a.y > p.y !== b.y > p.y && p.x < a.x + ((p.y - a.y) * (b.x - a.x)) / (b.y - a.y)) inside = !inside;
-  }
-  return inside;
-}
-
-/** Where a door or window sits: its two ends, the wall direction and the normal pointing into the room. */
-function openingGeometry(o: Opening): { p1: Vec; p2: Vec; u: Vec; n: Vec } | undefined {
-  const a = pointById(plan, o.a);
-  const b = pointById(plan, o.b);
-  if (!a || !b) return undefined;
-  const len = dist(a, b) || 1;
-  const u = { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
-  const p1 = { x: a.x + u.x * o.at, y: a.y + u.y * o.at };
-  const p2 = { x: p1.x + u.x * o.width, y: p1.y + u.y * o.width };
-  let n = { x: -u.y, y: u.x };
-  const probe = { x: (p1.x + p2.x) / 2 + n.x * 0.05, y: (p1.y + p2.y) / 2 + n.y * 0.05 };
-  if (!insideRooms(probe)) n = { x: -n.x, y: -n.y };
-  return { p1, p2, u, n };
-}
+const openingGeometry = (o: Opening) => openingFrame(plan, o);
 
 // ---------- rendering ----------
 
@@ -260,8 +241,8 @@ function drawOpening(o: Opening): void {
   if (!g) return;
   const s1 = toScreen(g.p1);
   const s2 = toScreen(g.p2);
-  const selected = selection?.kind === 'opening' && selection.id === o.id;
-  const color = selected ? '#60a5fa' : '#e6e8eb';
+  const selected = (selection?.kind === 'opening' && selection.id === o.id) || joinFrom === o.id;
+  const color = selected ? '#60a5fa' : joinOf(plan, o.id) ? '#c084fc' : '#e6e8eb';
   const t = OPENING_PX / 2;
   const n = g.n; // screen and plan axes point the same way, so world directions work on screen
 
@@ -319,6 +300,22 @@ function render(): void {
   ctx.clearRect(0, 0, w, h);
   drawGrid();
 
+  // the selected room
+  if (selection?.kind === 'room') {
+    const loop = roomLoop(plan, roomIdsOf(plan, selection.id));
+    if (loop) {
+      ctx.fillStyle = '#60a5fa22';
+      ctx.beginPath();
+      loop.forEach((id, i) => {
+        const s = toScreen(pointById(plan, id)!);
+        if (i) ctx.lineTo(s.x, s.y);
+        else ctx.moveTo(s.x, s.y);
+      });
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
   // walls
   ctx.lineCap = 'round';
   for (const wall of plan.walls) {
@@ -326,7 +323,7 @@ function render(): void {
     const b = pointById(plan, wall.b);
     if (!a || !b) continue;
     const measured = findDistance(plan, wall.a, wall.b) !== undefined;
-    const selected = selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a));
+    const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || (selection?.kind === 'room' && roomIdsOf(plan, selection.id).has(wall.a));
     ctx.lineWidth = selected ? 5 : measured ? 4 : 3;
     ctx.strokeStyle = selected ? '#60a5fa' : measured ? '#4ade80' : '#9aa3b0';
     ctx.setLineDash(measured ? [] : [8, 5]);
@@ -348,7 +345,7 @@ function render(): void {
     // outside the room, clear of doors and windows drawn on the wall
     const u = unit(sub(b, a));
     let n = { x: -u.y, y: u.x };
-    if (insideRooms({ x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
+    if (insideRoom(plan, roomIdsOf(plan, wall.a), { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
     ctx.font = `${measured ? 'bold ' : ''}13px system-ui, sans-serif`;
     const away = Math.abs(n.x) * (ctx.measureText(text).width / 2 + 10) + Math.abs(n.y) * 15;
     const at = { x: (toScreen(a).x + toScreen(b).x) / 2 + n.x * away, y: (toScreen(a).y + toScreen(b).y) / 2 + n.y * away };
@@ -507,6 +504,11 @@ function renderSheet(): void {
         ? `<button id="flipHinge" class="icon" title="Hinge on the other side"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 20V8"/><path d="M5 8a12 12 0 0 1 12 12" stroke-dasharray="2 2.2"/><path d="M13 4h8m-2-2 2 2-2 2M21 9h-8m2-2-2 2 2 2"/></svg>Hinge side</button>` +
           `<button id="flipSwing" class="icon" title="Swing ${o.outward ? 'into' : 'out of'} the room"><svg viewBox="0 0 24 24"><path d="M2 12h20M6 12V3M6 12v9"/><path d="M6 3a9 9 0 0 1 9 9" stroke-dasharray="2 2.2"/><path d="M6 21a9 9 0 0 0 9-9" stroke-dasharray="2 2.2"/></svg>Swing ${o.outward ? 'in' : 'out'}</button>`
         : '') +
+      (o.type === 'door'
+        ? joinOf(plan, o.id)
+          ? `<button id="unjoin" class="icon" title="Unjoin from the other room"><svg viewBox="0 0 24 24"><path d="M9 15 6.5 17.5a3.5 3.5 0 0 1-5-5L4 10M15 9l2.5-2.5a3.5 3.5 0 0 1 5 5L20 14M9 9 7 7M15 15l2 2M12 3v2M3 12h2"/></svg>Unjoin</button>`
+          : `<button id="join" class="icon" title="Join to the same door in another room"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Join rooms</button>`
+        : '') +
       `<button id="delO" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
     const flip = (key: 'hingeAtB' | 'outward') => {
@@ -520,9 +522,39 @@ function renderSheet(): void {
       el('flipHinge').onclick = () => flip('hingeAtB');
       el('flipSwing').onclick = () => flip('outward');
     }
+    if (o.type === 'door') {
+      if (joinOf(plan, o.id)) {
+        el('unjoin').onclick = () => {
+          unjoin(plan, o.id);
+          sheet.dataset.key = '';
+          resolve();
+        };
+      } else {
+        el('join').onclick = () => {
+          joinFrom = o.id;
+          closeSheet();
+          showScanMsg('Now tap the same door in the other room. Tap anywhere else to cancel.');
+          render();
+        };
+      }
+    }
     el('delO').onclick = () => {
       if (!confirm(`Delete this ${o.type}?`)) return;
       plan.openings = plan.openings.filter((x) => x.id !== sel.id);
+      closeSheet();
+      resolve();
+    };
+  } else if (sel?.kind === 'room') {
+    const ids = roomIdsOf(plan, sel.id);
+    if (ids.size < 3) return closeSheet();
+    const area = roomArea(plan, ids);
+    const doors = plan.openings.filter((o) => ids.has(o.a)).length;
+    sheet.innerHTML =
+      head('Room', `${area !== null ? `${area.toFixed(1)} m² · ` : ''}${ids.size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
+      `<div class="row"><button id="delRoom" class="icon danger" title="Delete this room"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete room</button></div>`;
+    el('delRoom').onclick = () => {
+      if (!confirm('Delete this whole room, with its walls, doors and windows?')) return;
+      deleteRoom(plan, sel.id);
       closeSheet();
       resolve();
     };
@@ -655,6 +687,13 @@ canvas.addEventListener('pointerdown', (e) => {
   const tol = e.pointerType === 'touch' ? TOUCH_HIT : 1;
   selectionBeforeTouch = selection;
 
+  if (joinFrom) {
+    const target = hitOpening(pos.x, pos.y, tol);
+    if (target) return joinTap(target);
+    joinFrom = null;
+    showScanMsg(null);
+  }
+
   if (tool === 'wall') return wallTap(pos, tol);
   if (tool) return openingTap(pos, tol);
 
@@ -670,7 +709,7 @@ canvas.addEventListener('pointerdown', (e) => {
     selection = { kind: 'wall', a: w.a, b: w.b };
   } else {
     selection = null;
-    drag = { kind: 'pan', x: pos.x, y: pos.y };
+    drag = { kind: 'pan', x: pos.x, y: pos.y, moved: false };
   }
   render();
   renderUi();
@@ -698,6 +737,7 @@ canvas.addEventListener('pointermove', (e) => {
     }
     render();
   } else if (drag?.kind === 'pan') {
+    if (Math.hypot(pos.x - drag.x, pos.y - drag.y) > 3) drag.moved = true;
     view.ox += pos.x - drag.x;
     view.oy += pos.y - drag.y;
     drag.x = pos.x;
@@ -716,9 +756,39 @@ const pointerEnd = (e: PointerEvent) => {
     return;
   }
   const moved = drag?.kind === 'point' && drag.moved;
+  const tapped = drag?.kind === 'pan' && !drag.moved && e.type === 'pointerup';
   drag = null;
   if (moved) resolve();
+  if (tapped) tapRoom(eventPos(e));
 };
+
+/** A tap on empty floor inside a room selects the room. */
+function tapRoom(pos: Vec): void {
+  const p = toWorld(pos.x, pos.y);
+  const room = roomComponents(plan).find((ids) => ids.length >= 3 && insideRoom(plan, new Set(ids), p));
+  if (!room) return;
+  selection = { kind: 'room', id: room[0] };
+  render();
+  renderUi();
+}
+
+function joinTap(targetId: string): void {
+  const from = joinFrom;
+  joinFrom = null;
+  if (!from) return;
+  const error = joinDoors(plan, from, targetId);
+  if (error) {
+    showScanMsg(error);
+    setTimeout(() => showScanMsg(null), 4000);
+    render();
+    return;
+  }
+  showScanMsg(null);
+  selection = { kind: 'opening', id: from };
+  sheet.dataset.key = '';
+  fit();
+  resolve();
+}
 canvas.addEventListener('pointerup', pointerEnd);
 canvas.addEventListener('pointercancel', pointerEnd);
 
@@ -747,7 +817,11 @@ window.addEventListener('keydown', (e) => {
     restore(history.redo());
     return;
   }
-  if (e.key === 'Escape' && tool) setTool(null);
+  if (e.key === 'Escape' && joinFrom) {
+    joinFrom = null;
+    showScanMsg(null);
+    render();
+  } else if (e.key === 'Escape' && tool) setTool(null);
   else if (e.key === 'Escape') closeSheet();
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   const sel = selection;

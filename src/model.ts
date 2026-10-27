@@ -49,15 +49,22 @@ export interface Opening {
   outward?: boolean;
 }
 
+/** Two doors, in different rooms, that are the same door: the rooms are placed so the doors coincide. */
+export interface Join {
+  a: string;
+  b: string;
+}
+
 export interface Plan {
   points: PlanPoint[];
   walls: Wall[];
   constraints: Constraint[];
   furniture: Furniture[];
   openings: Opening[];
+  joins: Join[];
 }
 
-export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [] });
+export const emptyPlan = (): Plan => ({ points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [] });
 
 export const dist = (a: Vec, b: Vec): number => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -144,6 +151,7 @@ export function parse(text: string): Plan {
     constraints: raw.constraints,
     furniture: Array.isArray(raw.furniture) ? raw.furniture : [],
     openings: Array.isArray(raw.openings) ? raw.openings : [],
+    joins: Array.isArray(raw.joins) ? raw.joins : [],
   };
 }
 
