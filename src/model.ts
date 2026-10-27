@@ -41,6 +41,8 @@ export interface Opening {
   b: string;
   at: number;
   width: number;
+  /** The width was typed in: it stays when the wall is rescaled. */
+  measured?: boolean;
 }
 
 export interface Plan {

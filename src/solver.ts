@@ -11,7 +11,7 @@
 // everywhere, so measuring one wall stretches the walls that are not
 // measured in proportion. Each room's centre stays where the capture put it.
 
-import { Constraint, Plan, Vec, dist } from './model';
+import { Constraint, Opening, Plan, Vec, dist } from './model';
 
 /** Standard deviations: how much each kind of fact is trusted (metres / cosine). */
 export const SIGMA = {
@@ -173,8 +173,19 @@ export function solve(plan: Plan, maxIterations = 100): SolveResult {
   return { points, sensors, iterations, conflicts };
 }
 
-/** Applies a solution to the plan in place. */
+const wallLength = (plan: Plan, o: Opening): number => {
+  const a = plan.points.find((p) => p.id === o.a);
+  const b = plan.points.find((p) => p.id === o.b);
+  return a && b ? dist(a, b) : 0;
+};
+
+/**
+ * Applies a solution to the plan in place. Doors and windows scale with
+ * their wall, like the rest of the capture; a typed width stays as it is and
+ * only its place along the wall follows.
+ */
 export function apply(plan: Plan, result: SolveResult): void {
+  const before = plan.openings.map((o) => wallLength(plan, o));
   for (const p of plan.points) {
     const s = result.points.get(p.id);
     if (s) {
@@ -184,6 +195,15 @@ export function apply(plan: Plan, result: SolveResult): void {
     const sensor = result.sensors.get(p.id);
     if (sensor) p.sensor = sensor;
   }
+  plan.openings.forEach((o, i) => {
+    const len = wallLength(plan, o);
+    if (!before[i] || !len) return;
+    const k = len / before[i];
+    const centre = (o.at + o.width / 2) * k;
+    if (!o.measured) o.width *= k;
+    o.width = Math.min(o.width, len);
+    o.at = Math.max(0, Math.min(len - o.width, centre - o.width / 2));
+  });
 }
 
 const mean = (pts: Vec[]): Vec => ({ x: pts.reduce((s, p) => s + p.x, 0) / pts.length, y: pts.reduce((s, p) => s + p.y, 0) / pts.length });

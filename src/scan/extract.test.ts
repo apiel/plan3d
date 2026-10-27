@@ -281,6 +281,34 @@ describe('extractRoom', () => {
     expect(win.to - win.from).toBeCloseTo(1.2, 1);
   });
 
+  it('finds the wall of a window marked at the back of a deep recess, or through the glass', () => {
+    const cams = [
+      { x: 1, y: 1 },
+      { x: 3, y: 1 },
+      { x: 1, y: 2 },
+      { x: 3, y: 2 },
+    ];
+    const frames = scan(rect, 2.5, cams);
+    const cam: [number, number, number] = [2, 1.4, 1.2];
+    const room = extractRoom(frames, {
+      corners: [],
+      openings: [
+        // 45 cm behind the 4 m wall at y = 3, a 100 cm window
+        { type: 'window', a: [1.5, 1.5, 3.45], b: [2.5, 1.5, 3.45], camA: cam, camB: cam },
+        // depth through the glass of a window in the 3 m wall at x = 0, seen 3 m outside
+        { type: 'window', a: [-3, 1.5, 0.2], b: [-3, 1.5, 2.6], camA: cam, camB: cam },
+      ],
+    })!;
+    expect(room.openings).toHaveLength(2);
+    const wallLen = (i: number) => dist(room.corners[i], room.corners[(i + 1) % room.corners.length]);
+    const recess = room.openings.find((o) => wallLen(o.wall) > 3.5)!;
+    expect(recess.to - recess.from).toBeCloseTo(1.0, 1);
+    const glass = room.openings.find((o) => wallLen(o.wall) < 3.5)!;
+    expect(glass).toBeDefined();
+    // the line of sight from (2, 1.2) to (-3, 0.2) and (-3, 2.6) meets x = 0 at y = 0.8 and y = 1.76
+    expect(glass.to - glass.from).toBeCloseTo(0.96, 1);
+  });
+
   it('gives up on too little data', () => {
     expect(extractRoom([])).toBeNull();
     expect(extractRoom([{ cam: [0, 1, 0], points: new Float32Array(30) }])).toBeNull();

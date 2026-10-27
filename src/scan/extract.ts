@@ -41,8 +41,8 @@ export interface Box {
 /** What the user pointed at during the scan, in world metres. */
 export interface Marks {
   corners: Vec3[];
-  /** Left and right edge of each door or window. */
-  openings: { type: 'door' | 'window'; a: Vec3; b: Vec3 }[];
+  /** Left and right edge of each door or window, and where the phone was when each was marked. */
+  openings: { type: 'door' | 'window'; a: Vec3; b: Vec3; camA?: Vec3; camB?: Vec3 }[];
 }
 
 export interface RoomOpening {
@@ -81,7 +81,8 @@ const MARK_MERGE = 0.3; // corner marks closer than this are the same corner mar
 const MARK_TRUST = 0.3; // a fitted corner further than this from its mark is wrong, keep the mark
 const WALL_FIT_BAND = 0.15; // wall points this close to the line between two marks belong to that wall
 const WALL_FIT_MIN = 20; // fewer points than this and the wall is just the line between the marks
-const OPENING_REACH = 0.75; // door/window marks further than this from every wall are dropped
+const OPENING_REACH = 0.75; // door/window marks inside the room further than this from every wall are dropped
+const RECESS_MAX = 1.0; // a mark this far behind its wall is a window deep in its recess; further, depth went through the glass
 const OPENING_MIN = 0.3; // narrower openings are a slip of the finger
 
 export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomScan | null {
@@ -93,7 +94,13 @@ export function extractRoom(frames: Keyframe[], marks: Marks = noMarks): RoomSca
   const s = Math.sin(-first.phi);
   const second = run(rotateFrames(frames, c, s), {
     corners: marks.corners.map((p) => rotate(p, c, s)),
-    openings: marks.openings.map((o) => ({ ...o, a: rotate(o.a, c, s), b: rotate(o.b, c, s) })),
+    openings: marks.openings.map((o) => ({
+      ...o,
+      a: rotate(o.a, c, s),
+      b: rotate(o.b, c, s),
+      camA: o.camA && rotate(o.camA, c, s),
+      camB: o.camB && rotate(o.camB, c, s),
+    })),
   });
   return second ?? first;
 }
@@ -249,7 +256,9 @@ function run(frames: Keyframe[], marks: Marks): Pass | null {
   return {
     corners,
     furniture: boxes.map((b) => snapBoxToWalls({ ...b, x: b.x - cx, y: b.y - cy }, corners)),
-    openings: marks.openings.flatMap((o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners) ?? []),
+    openings: marks.openings.flatMap(
+      (o) => placeOpening(o.type, toPlan(o.a), toPlan(o.b), corners, o.camA && toPlan(o.camA), o.camB && toPlan(o.camB)) ?? []
+    ),
     floorY,
     ceilingY,
     phi: snapped.phi,
@@ -349,26 +358,82 @@ function fitWall(a: Vec, b: Vec, walls: number[][]): Line {
   return line;
 }
 
-/** A door or window from its two edge marks, on the wall nearest to it. */
-function placeOpening(type: 'door' | 'window', a: Vec, b: Vec, corners: Vec[]): RoomOpening | undefined {
+/**
+ * A door or window from its two edge marks. Marks inside the room go to the
+ * nearest wall. Marks outside it, like a window at the back of a deep recess
+ * or depth that went through the glass, go to the wall that the line from
+ * the phone to them crosses first.
+ */
+function placeOpening(type: 'door' | 'window', a: Vec, b: Vec, corners: Vec[], camA?: Vec, camB?: Vec): RoomOpening | undefined {
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const inside = insidePolygon(mid, corners);
   let wall = -1;
-  let best = OPENING_REACH;
-  corners.forEach((p, i) => {
-    const d = distToSegment(mid, p, corners[(i + 1) % corners.length]);
-    if (d < best) {
-      best = d;
-      wall = i;
-    }
-  });
+  if (!inside && camA && camB) {
+    wall = firstCrossing({ x: (camA.x + camB.x) / 2, y: (camA.y + camB.y) / 2 }, mid, corners);
+  } else {
+    let best = inside ? OPENING_REACH : RECESS_MAX;
+    corners.forEach((p, i) => {
+      const d = distToSegment(mid, p, corners[(i + 1) % corners.length]);
+      if (d < best) {
+        best = d;
+        wall = i;
+      }
+    });
+  }
   if (wall < 0) return undefined;
   const p = corners[wall];
   const q = corners[(wall + 1) % corners.length];
   const len = Math.hypot(q.x - p.x, q.y - p.y);
-  const along = (v: Vec) => Math.max(0, Math.min(len, ((v.x - p.x) * (q.x - p.x) + (v.y - p.y) * (q.y - p.y)) / len));
-  const from = Math.min(along(a), along(b));
-  const to = Math.max(along(a), along(b));
+  // straight across onto the wall, except for marks far behind it: those are
+  // where the line of sight meets the wall
+  const along = (v: Vec, cam?: Vec) => {
+    const behind = Math.abs((v.x - p.x) * (q.y - p.y) - (v.y - p.y) * (q.x - p.x)) / len;
+    const at = cam && behind > RECESS_MAX ? (crossLine(cam, v, p, q) ?? v) : v;
+    return Math.max(0, Math.min(len, ((at.x - p.x) * (q.x - p.x) + (at.y - p.y) * (q.y - p.y)) / len));
+  };
+  const ta = along(a, camA);
+  const tb = along(b, camB);
+  const from = Math.min(ta, tb);
+  const to = Math.max(ta, tb);
   return to - from >= OPENING_MIN ? { type, wall, from, to } : undefined;
+}
+
+function insidePolygon(p: Vec, poly: Vec[]): boolean {
+  let inside = false;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    if (a.y > p.y !== b.y > p.y && p.x < a.x + ((p.y - a.y) * (b.x - a.x)) / (b.y - a.y)) inside = !inside;
+  }
+  return inside;
+}
+
+/** Where the line through `o` and `v` meets the line through `p` and `q`. */
+function crossLine(o: Vec, v: Vec, p: Vec, q: Vec): Vec | undefined {
+  return intersect({ p: o, d: { x: v.x - o.x, y: v.y - o.y } }, { p, d: { x: q.x - p.x, y: q.y - p.y } });
+}
+
+/** Index of the polygon side the segment from `o` to `v` crosses first, or -1. */
+function firstCrossing(o: Vec, v: Vec, poly: Vec[]): number {
+  let best = -1;
+  let bestT = Infinity;
+  const dx = v.x - o.x;
+  const dy = v.y - o.y;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue;
+    const t = ((a.x - o.x) * ey - (a.y - o.y) * ex) / den; // along o -> v
+    const u = ((a.x - o.x) * dy - (a.y - o.y) * dx) / den; // along the side
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1 && t < bestT) {
+      bestT = t;
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** Furniture near a wall was cut short by the clear strip along walls: extend it to the wall. */

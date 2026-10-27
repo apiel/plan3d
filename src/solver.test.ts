@@ -120,6 +120,21 @@ describe('solver', () => {
     });
   });
 
+  it('scales doors and windows with their wall, except a typed width', () => {
+    const plan = noisyRoom();
+    const [p0, p1] = plan.points.map((p) => p.id);
+    const k = 4.4 / len(plan, 0);
+    plan.openings.push({ id: 'd', type: 'door', a: p0, b: p1, at: 1, width: 0.8 });
+    plan.openings.push({ id: 'w', type: 'window', a: p0, b: p1, at: 2.5, width: 1, measured: true });
+    setDistance(plan, p0, p1, 4.4);
+    apply(plan, solve(plan));
+    const [door, win] = plan.openings;
+    expect(door.at).toBeCloseTo(1 * k, 2);
+    expect(door.width).toBeCloseTo(0.8 * k, 2);
+    expect(win.width).toBe(1);
+    expect(win.at + win.width / 2).toBeCloseTo(3 * k, 2); // its centre moved along
+  });
+
   it('reports contradictory measurements', () => {
     const plan = noisyRoom();
     setDistance(plan, plan.points[0].id, plan.points[1].id, 4.0);

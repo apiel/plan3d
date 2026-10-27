@@ -55,11 +55,13 @@ let messageUntil = 0;
 let added = false;
 /** World point under the crosshair in the latest frame, if depth had one. */
 let aim: Vec3 | null = null;
+/** Where the phone was in the latest frame. */
+let camPos: Vec3 = [0, 0, 0];
 const marks: Marks = { corners: [], openings: [] };
 /** Marks in the order they were made, for undo. */
 const placed: Mark[] = [];
 /** First edge of a door or window, waiting for the second. */
-let pending: { type: 'door' | 'window'; a: Vec3 } | null = null;
+let pending: { type: 'door' | 'window'; a: Vec3; camA: Vec3 } | null = null;
 /** The mark under the cross in the latest frame. */
 let target: Mark | null = null;
 
@@ -155,6 +157,7 @@ function onFrame(_t: number, frame: XRFrame): void {
     depth = null;
   }
 
+  camPos = pos;
   aim = depth ? aimAt(view, depth) : null;
   cross.classList.toggle('ok', !!aim);
   // while a door or window waits for its second side, show its width so far instead of the distance
@@ -234,10 +237,10 @@ function markCorner(): void {
 function markOpening(type: 'door' | 'window'): void {
   if (!aim) return flash('No depth under the cross. Step back a little or aim again.');
   if (pending?.type !== type) {
-    setPending({ type, a: aim });
+    setPending({ type, a: aim, camA: camPos });
     return;
   }
-  const o: Opening = { type, a: pending.a, b: aim };
+  const o: Opening = { type, a: pending.a, b: aim, camA: pending.camA, camB: camPos };
   marks.openings.push(o);
   placed.push({ kind: 'opening', o });
   setPending(null);
@@ -499,7 +502,7 @@ export function downloadScan(): void {
     version: 2,
     date: new Date().toISOString(),
     frames: frames.map((f) => ({ cam: f.cam.map(round), points: Array.from(f.points, round) })),
-    marks: { corners: marks.corners.map(r3), openings: marks.openings.map((o) => ({ type: o.type, a: r3(o.a), b: r3(o.b) })) },
+    marks: { corners: marks.corners.map(r3), openings: marks.openings.map((o) => ({ type: o.type, a: r3(o.a), b: r3(o.b), camA: o.camA && r3(o.camA), camB: o.camB && r3(o.camB) })) },
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   const a = document.createElement('a');

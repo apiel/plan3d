@@ -451,12 +451,13 @@ function renderSheet(): void {
     const o = plan.openings.find((x) => x.id === sel.id);
     if (!o) return closeSheet();
     sheet.innerHTML =
-      head(o.type === 'door' ? 'Door' : 'Window', 'width') +
+      head(o.type === 'door' ? 'Door' : 'Window', o.measured ? '<span class="ok">width measured</span>' : `width estimated ${(o.width * 100).toFixed(0)} cm`) +
       `<div class="row"><div class="seg"><button id="isDoor" class="${o.type === 'door' ? 'on' : ''}">Door</button><button id="isWindow" class="${o.type === 'window' ? 'on' : ''}">Window</button></div></div>` +
       numberRow(o.width, o.width * 100, (m) => {
         // keep it centred where it was
         o.at = Math.max(0, o.at + (o.width - m) / 2);
         o.width = m;
+        o.measured = true;
         save(plan);
         closeSheet();
         render();
