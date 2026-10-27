@@ -353,26 +353,37 @@ function render(): void {
     labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
-  // right-angle markers
-  ctx.strokeStyle = '#4ade80';
-  ctx.lineWidth = 2;
-  ctx.lineCap = 'butt';
-  for (const p of plan.points) {
-    if (!findRightAngle(plan, p.id)) continue;
-    const n = cornerNeighbours(plan, p.id);
-    if (!n) continue;
-    const a = pointById(plan, n[0]);
-    const c = pointById(plan, n[1]);
-    if (!a || !c) continue;
-    const sp = toScreen(p);
-    const ua = unit(sub(toScreen(a), sp));
-    const uc = unit(sub(toScreen(c), sp));
+  // the angle at the selected corner (also while dragging it): a square when it is held at 90 degrees
+  const corner = selection?.kind === 'point' ? pointById(plan, selection.id) : undefined;
+  const nb = corner && cornerNeighbours(plan, corner.id);
+  const wa = nb && pointById(plan, nb[0]);
+  const wc = nb && pointById(plan, nb[1]);
+  if (corner && wa && wc) {
+    const sp = toScreen(corner);
+    const ua = unit(sub(toScreen(wa), sp));
+    const uc = unit(sub(toScreen(wc), sp));
+    const deg = (Math.acos(Math.max(-1, Math.min(1, ua.x * uc.x + ua.y * uc.y))) * 180) / Math.PI;
+    const square = findRightAngle(plan, corner.id);
+    ctx.strokeStyle = square ? '#4ade80' : '#60a5fa';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'butt';
     const s = 14;
     ctx.beginPath();
-    ctx.moveTo(sp.x + ua.x * s, sp.y + ua.y * s);
-    ctx.lineTo(sp.x + (ua.x + uc.x) * s, sp.y + (ua.y + uc.y) * s);
-    ctx.lineTo(sp.x + uc.x * s, sp.y + uc.y * s);
+    if (square) {
+      ctx.moveTo(sp.x + ua.x * s, sp.y + ua.y * s);
+      ctx.lineTo(sp.x + (ua.x + uc.x) * s, sp.y + (ua.y + uc.y) * s);
+      ctx.lineTo(sp.x + uc.x * s, sp.y + uc.y * s);
+    } else {
+      const from = Math.atan2(ua.y, ua.x);
+      let sweep = Math.atan2(uc.y, uc.x) - from;
+      while (sweep > Math.PI) sweep -= 2 * Math.PI;
+      while (sweep < -Math.PI) sweep += 2 * Math.PI;
+      ctx.arc(sp.x, sp.y, s, from, from + sweep, sweep < 0);
+    }
     ctx.stroke();
+    const bis = unit({ x: ua.x + uc.x, y: ua.y + uc.y });
+    const reach = 34;
+    label(`${deg.toFixed(deg % 1 < 0.05 || deg % 1 > 0.95 ? 0 : 1)}°`, { x: sp.x + bis.x * reach, y: sp.y + bis.y * reach }, square ? '#4ade80' : '#60a5fa', square);
   }
 
   // the wall being drawn, from its first corner to the finger
@@ -563,8 +574,10 @@ function renderSheet(): void {
     const square = findRightAngle(plan, sel.id);
     sheet.innerHTML =
       head('Corner', 'drag to move') +
-      `<div class="row"><button id="angle" ${canSquare ? '' : 'disabled'} class="${square ? 'on' : ''}">${square ? 'Right angle ✓' : 'Make it a right angle'}</button></div>` +
-      `<div class="row"><button id="del" class="link danger">Delete corner</button></div>`;
+      `<div class="row">` +
+      `<button id="angle" class="icon ${square ? 'on' : ''}" ${canSquare ? '' : 'disabled'} title="${square ? 'Held at 90°, tap to release' : 'Hold this corner at 90°'}" aria-pressed="${square}"><svg viewBox="0 0 24 24"><path d="M5 3v16h16"/><path d="M5 13h6v6"/></svg>${square ? '90° on' : '90° off'}</button>` +
+      `<button id="del" class="icon danger" title="Delete this corner"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
+      `</div>`;
     el('angle').onclick = () => {
       toggleRightAngle(plan, sel.id);
       sheet.dataset.key = '';
