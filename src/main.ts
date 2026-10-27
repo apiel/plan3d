@@ -301,6 +301,18 @@ function drawOpening(o: Opening): void {
   ctx.setLineDash([]);
 }
 
+/** The width, in cm, on the room side of the opening: bold green once typed in, "~" while estimated. */
+function drawOpeningLabel(o: Opening): void {
+  const g = openingGeometry(o);
+  if (!g) return;
+  const s1 = toScreen(g.p1);
+  const s2 = toScreen(g.p2);
+  if (Math.hypot(s2.x - s1.x, s2.y - s1.y) < 30) return; // too small to fit a label
+  const m = o.measured === true;
+  const at = { x: (s1.x + s2.x) / 2 + g.n.x * 14, y: (s1.y + s2.y) / 2 + g.n.y * 14 };
+  label(`${m ? '' : '~'}${(o.width * 100).toFixed(0)}`, at, m ? '#4ade80' : '#c3c9d2', m);
+}
+
 function render(): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -323,6 +335,7 @@ function render(): void {
   }
 
   for (const o of plan.openings) drawOpening(o);
+  for (const o of plan.openings) drawOpeningLabel(o);
 
   // wall lengths, over the openings, and remembered for tapping
   labelBoxes = [];
