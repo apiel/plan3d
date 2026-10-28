@@ -31,7 +31,7 @@ import {
   wallTies,
 } from './model';
 import { planToSvg, readPlanFile } from './planfile';
-import { driveEnabled, loadFromDrive, saveToDrive } from './drive';
+import { driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
 import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
@@ -1659,8 +1659,8 @@ el('driveSave').onclick = async () => {
 el('driveLoad').onclick = async () => {
   try {
     showScanMsg('Loading from Google Drive…');
-    const text = await loadFromDrive();
-    if (text === null) return showScanMsg('No plan saved in Google Drive yet');
+    const text = pickerEnabled ? await pickFromDrive() : await loadFromDrive();
+    if (text === null) return showScanMsg(pickerEnabled ? null : 'No plan saved in Google Drive yet');
     if (plan.points.length && !confirm('Replace the current plan with the one from Google Drive?')) {
       return showScanMsg(null);
     }

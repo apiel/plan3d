@@ -69,6 +69,8 @@ One-time setup:
 4. Credentials > Create credentials > OAuth client ID > **Web application**. Authorized JavaScript origins: `http://localhost:5173` and your GitHub Pages origin (`https://<user>.github.io`, no path).
 5. Paste the client ID into `CLIENT_ID` in `src/drive.ts`. It is public, safe to commit.
 
+Optional, to **choose any SVG/JSON file** when loading (Google Picker; the app then gets access to just that file): enable **Google Picker API** in the same project, Credentials > Create credentials > **API key**, restrict it to HTTP referrers (your two origins) and to the Picker API, and paste it into `API_KEY` in `src/drive.ts`. Without it, Load opens the app's own `plan3d.svg`.
+
 ## Depth test on a phone
 
 `depth.html` checks whether the phone gives usable depth through WebXR and measures between two points, to compare with a tape. Aim the crosshair at a point and tap, then aim at a second point and tap.
