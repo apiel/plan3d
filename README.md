@@ -2,7 +2,7 @@
 
 <h1 align="center">plan3d</h1>
 
-<p align="center"><b>Floor plans from your phone.</b><br>Scan a room, type in the few measurements you trust, furnish it, and walk around it in 3D.</p>
+<p align="center"><b>Walk around a room with your phone. Get its floor plan.</b><br>An automatic room scanner that runs in the browser of an ordinary Android phone: no LiDAR, no app store, no account.<br>Then type in the few measurements you trust, furnish it, and see it in 3D.</p>
 
 <p align="center"><a href="https://apiel.github.io/plan3d/"><b>Open the app →</b></a></p>
 
@@ -12,11 +12,30 @@
   <img src="docs/screenshots/phone-3d.png" width="250" alt="The same flat in 3D">
 </p>
 
-Renovating means measuring the same wall three times because the numbers got lost, and drawing plans that are out of date by the next weekend. plan3d keeps the plan on the phone you already carry. No LiDAR, no extra hardware, no account, nothing to install from a store.
+Renovating means measuring the same wall three times because the numbers got lost, and drawing plans that are out of date by the next weekend. plan3d keeps the plan on the phone you already carry.
+
+## The room scanner
+
+Room-scanning apps usually need an iPhone Pro with LiDAR, or a laser and an afternoon of tapping corners. plan3d does it with the depth sensing that ordinary Android phones already have, straight from a web page (WebXR in Chrome; developed on a Pixel 9a). Tap **Scan room**, turn slowly and walk around, tap **Finish**. You don't draw anything: the plan builds itself.
+
+<p align="center"><img src="docs/scan.svg" width="100%" alt="Left: thousands of depth points seen from above, with the path the phone took through an L-shaped room. Right: the room plan3d extracted: six walls with their lengths, the sofa, and the open doorway."></p>
+
+From a few thousand depth points, the scanner works out:
+
+- **The walls.** It reads them from a band just under the ceiling, above the furniture, so a sofa or wardrobe against a wall doesn't move the wall. Then it squares the corners.
+- **The floor and ceiling.** The plan gets your real ceiling height, ready for the 3D view.
+- **Open doorways.** It finds them from what the phone saw through them into the next room.
+- **Furniture.** It sees what stands in the room, with its size and height (not yet put into the plan; for now you place furniture from the library).
+- **Stairs.** Mark a flight while scanning and you get its width, length and number of steps.
+- **Your marks.** Optionally, put the centre cross on corners, doors and windows while scanning and tap. Marks are drawn over the camera view, and a mini map shows what has been seen so far.
+
+Phone depth is rough, a few cm off. That's where the second half of plan3d comes in: type the one or two lengths you measured with a tape, and the solver rescales and squares the whole room around them.
+
+*The figure above is a simulated scan of an L-shaped room, run through the real extraction code (`scripts/scan-figure.ts`). After a real scan, ⋯ > **Download last scan data** gives you the raw points, and `npm run replay` draws the same comparison for your own room.*
 
 ## What it does
 
-- 📱 **Scan a room with the phone camera.** Walk around and the outline builds itself from the phone's depth sensing (WebXR in Chrome, on Android phones with ARCore depth; tried on a Pixel 9a). Mark corners, doors, windows and stairs while you scan if you want.
+- 📱 **Scan a room with the phone camera.** Walk around and the outline, ceiling height and open doorways come by themselves (see [above](#the-room-scanner)). Mark corners, doors, windows and stairs while you scan if you want.
 - 📏 **Make it exact with the measurements you trust.** Type a wall length from your tape or laser and mark the right angles. A least-squares solver fits everything together, and shows which wall is worth measuring next.
 - 🏠 **Build the whole flat.** Join rooms through their shared doors and they snap into place across the wall.
 - 🪟 **Doors and windows the way they really are.** Door hinge side and swing, window frame depth in the wall, and niches under windows that furniture can slide into.
@@ -34,13 +53,13 @@ Renovating means measuring the same wall three times because the numbers got los
 ## Get started
 
 1. Open **<https://apiel.github.io/plan3d/>** in Chrome on an Android phone (⋮ > **Install app** puts it on the home screen).
-2. Tap **Scan room**, aim at the walls and walk slowly around the room, then **Finish**.
+2. Tap **Scan room**, aim at the walls (and now and then the floor and ceiling), turn slowly and walk around the room, then **Finish**. The room appears in the plan.
 3. Tap a wall to type its measured length, and tap the corners that are square.
 4. Add furniture with the sofa button, then tap **3D**.
 
 At a computer, the same editor works with a mouse and keyboard: draw walls by hand, use the arrow keys to nudge things, Ctrl+Z to undo, and Ctrl+S to save to Google Drive.
 
-The screenshots show a made-up demo flat (`scripts/demo-plan.ts`). `scripts/screenshots.mjs` takes them again.
+The screenshots show a made-up demo flat (`scripts/demo-plan.ts`). `scripts/screenshots.mjs` takes them again, and `scripts/scan-figure.ts` redraws the scan figure.
 
 ---
 
@@ -147,8 +166,9 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/scan.ts` | AR scan, started from the editor: collects depth keyframes, crosshair marks drawn over the camera, mini map, adds the room to the plan. |
 | `src/scan/extract.ts` | Keyframes to room outline (see above). |
 | `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
+| `src/scan/simulate.ts` | A simulated scan: the depth points a phone would see in a known room (tests and the README figure). |
 | `scripts/replay.ts` | Replays a downloaded scan through the extraction and writes an SVG. |
-| `scripts/demo-plan.ts`, `scripts/screenshots.mjs` | The made-up demo flat, and the README screenshots taken from it with headless Chrome (`docs/screenshots/`). |
+| `scripts/demo-plan.ts`, `scripts/screenshots.mjs`, `scripts/scan-figure.ts` | The made-up demo flat and the README screenshots taken from it with headless Chrome (`docs/screenshots/`); the scan figure (`docs/scan.svg`). |
 | `src/storage.ts` | Plan persistence in `localStorage`. |
 | `src/planfile.ts` | The plan as an SVG file: a drawing carrying the plan JSON in `<metadata>` and instructions for an AI editing it; reading .svg or .json back with checks. |
 | `src/xr.ts` | WebXR matrix helpers shared by the scan code. |
