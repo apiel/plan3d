@@ -758,21 +758,37 @@ function crowded(at: Vec, w: number, h: number): boolean {
   return false;
 }
 
-/** A dotted dimension line with its length, the label put where it covers nothing if it can. */
-function dimension(s1: Vec, s2: Vec, metres: number): void {
+/**
+ * A dotted dimension line with its length, the label put where it covers nothing if it can.
+ * Too short to hold its number, the number goes beside the line towards `side` (a unit vector
+ * on screen) if given, else it is left out: zoom in to see it.
+ */
+function dimension(s1: Vec, s2: Vec, metres: number, side?: Vec): void {
   ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 1;
   ctx.lineCap = 'butt';
   ctx.setLineDash([3, 4]);
   line(s1, s2);
   ctx.setLineDash([]);
-  if (dist(s1, s2) < 40) return; // too short to hold its number: zoom in to see it
+  const short = dist(s1, s2) < 40;
+  if (short && !side) return;
   const text = `${(metres * 100).toFixed(0)} cm`;
   ctx.font = '13px system-ui, sans-serif';
   const w = ctx.measureText(text).width + 8;
   const h = 18;
   const along = (f: number) => ({ x: s1.x + (s2.x - s1.x) * f, y: s1.y + (s2.y - s1.y) * f });
-  const spot = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8].map(along).find((at) => crowded(at, w, h) === false) ?? along(0.5);
+  // beside a short line: far enough out for the label's own size, then further if that is taken
+  const beside = (k: number) => {
+    const reach = Math.abs(side!.x) * w / 2 + Math.abs(side!.y) * h / 2 + 4 + k * 20;
+    return { x: (s1.x + s2.x) / 2 + side!.x * reach, y: (s1.y + s2.y) / 2 + side!.y * reach };
+  };
+  const spots = short ? [0, 1, 2, 3].map(beside) : [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8].map(along);
+  const spot = spots.find((at) => crowded(at, w, h) === false) ?? spots[0];
+  if (short) {
+    // a tick from the line to its number, so it is clear which line it belongs to
+    ctx.strokeStyle = '#38bdf8';
+    line(along(0.5), spot);
+  }
   label(text, spot, '#38bdf8', false);
   dimBoxes.push({ ...spot, w, h });
 }
@@ -842,7 +858,7 @@ function drawWallGaps(wall: Wall, only?: number): void {
     if (only !== undefined && i !== only) return;
     const s1 = toScreen({ x: a.x + u.x * g.s0, y: a.y + u.y * g.s0 });
     const s2 = toScreen({ x: a.x + u.x * g.s1, y: a.y + u.y * g.s1 });
-    dimension({ x: s1.x + off.x, y: s1.y + off.y }, { x: s2.x + off.x, y: s2.y + off.y }, g.s1 - g.s0);
+    dimension({ x: s1.x + off.x, y: s1.y + off.y }, { x: s2.x + off.x, y: s2.y + off.y }, g.s1 - g.s0, n);
   });
 }
 
