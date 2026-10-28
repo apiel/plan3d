@@ -7,7 +7,7 @@
 ## 3D and home use
 
 - [x] 3D view from the plan with three.js (extrude walls, openings), same stack as plinth3d. First version: no door leaves, no ceiling, one height for the whole plan, room names not shown. Not tried on the phone yet.
-- [ ] Furniture placement from a small library, with real dimensions.
+- [x] Furniture placement from a small library, with real dimensions (`src/furniture.ts`), and a show/hide toggle. Not tried on the phone yet. Not yet: furniture does not follow a room turned by **Join rooms** (it does follow a dragged room), 3D shows each piece as a plain box, the scan's detected boxes are not offered as furniture.
 
 ## Capture alternatives (only if the phone depth is not good enough)
 

@@ -330,11 +330,11 @@ export function setWallThickness(plan: Plan, a: string, b: string, thickness: nu
   }
 }
 
-/** Moves a group of rooms (its corners, where the capture put them, and room names) by `d` metres. */
+/** Moves a group of rooms (its corners, where the capture put them, room names and furniture) by `d` metres. */
 export function moveRoom(plan: Plan, id: string, d: Vec): void {
   const ids = roomIdsOf(plan, id);
   const own = rooms(plan).filter((loop) => ids.has(loop[0]));
-  for (const n of plan.names) {
+  for (const n of [...plan.names, ...plan.furniture]) {
     if (!own.some((loop) => insideLoop(plan, loop, n))) continue;
     n.x += d.x;
     n.y += d.y;

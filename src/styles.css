@@ -71,6 +71,12 @@ button:disabled { opacity: .4; cursor: default; }
 #sheet .swatch.pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; padding: 0; border: 0; cursor: pointer; }
 #sheet .icon { display: flex; flex-direction: column; align-items: center; gap: .15rem; min-width: 4.5rem; padding: .4rem .6rem; font-size: .75rem; }
 #sheet .icon svg { width: 1.6rem; height: 1.6rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#sheet .lib { max-height: 50vh; overflow-y: auto; margin: 0 -.25rem; padding: 0 .25rem; }
+#sheet .lib p { margin: .6rem 0 .35rem; font-size: .8rem; }
+#sheet .lib p:first-child { margin-top: 0; }
+#sheet .lib .row { gap: .35rem; }
+#sheet .lib .icon { width: 5rem; min-width: 0; padding: .4rem .2rem; text-align: center; line-height: 1.15; }
+#sheet .lib .icon svg { width: 2rem; height: 2rem; stroke-width: 1.1; }
 #sheet .next { color: #fbbf24; }
 #sheet .tie { color: #c084fc; flex: 1; }
 #sheet .link { background: none; border: 0; padding: .3rem 0; color: var(--muted); text-decoration: underline; }

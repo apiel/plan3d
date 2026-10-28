@@ -5,6 +5,7 @@
 import { Plan, Vec, Wall, constraintIds, dist, parse, pointById, serialize, wallThickness } from './model';
 import { groupLoop, insideLoop, insideRoom, loopArea, loopWalls, openingFrame, roomIdsOf, roomName, roomOutline, rooms, spotInside } from './rooms';
 import { stairCorners, stairTreads } from './stairs';
+import { LIBRARY, furnitureItem, symbolSvg } from './furniture';
 
 const DATA_ID = 'plan3d-data';
 
@@ -57,7 +58,10 @@ The JSON:
   * names: {name, x, y}: a room's name, at a spot inside that room.
   * color: "#rrggbb". What a colour means is up to the user (for example red for
     walls to remove, orange for walls to build).
-  * furniture, version: leave as they are.
+  * furniture: {id, kind, x, y, w, d, h, angle}: a piece of furniture centred on
+    x, y, w wide, d deep (back to front), h high, turned by angle degrees (at 0
+    its back faces -y). kind is one of: ${LIBRARY.map((i) => i.kind).join(', ')}.
+  * version: leave as it is.
 
 Rules:
   * New ids: any short text not used yet, for example "n1", "n2".
@@ -72,6 +76,7 @@ const unxml = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').repla
 
 /** Plan metres to drawing units (cm), rounded. */
 const cm = (m: number) => Math.round(m * 1000) / 10;
+const num = (x: number) => +x.toFixed(2);
 const pt = (p: Vec) => `${cm(p.x)},${cm(p.y)}`;
 const poly = (pts: Vec[]) => `M${pts.map(pt).join('L')}Z`;
 
@@ -169,6 +174,12 @@ export function planToSvg(plan: Plan): string {
   for (const s of plan.stairs) {
     out.push(`<path d="${poly(stairCorners(s))}" fill="none" stroke="#333" stroke-width="1.2"/>`);
     out.push(`<path d="${stairTreads(s).map(([p, q]) => `M${pt(p)}L${pt(q)}`).join('')}" stroke="#333" stroke-width=".8"/>`);
+  }
+
+  for (const f of plan.furniture) {
+    out.push(
+      `<g transform="translate(${cm(f.x)} ${cm(f.y)}) rotate(${num(f.angle)})" fill="#fff" stroke="#555" stroke-width=".8" color="#555">${symbolSvg(furnitureItem(f.kind), f.w, f.d, 100)}</g>`
+    );
   }
 
   // rooms: name and floor area

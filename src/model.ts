@@ -44,14 +44,17 @@ export type Constraint =
 export const constraintIds = (c: Constraint): string[] =>
   c.type === 'distance' ? [c.a, c.b] : c.type === 'rightAngle' || c.type === 'angle' ? [c.a, c.b, c.c] : [c.a, c.b, c.c, c.d];
 
-/** A box standing on the floor: min corner and size in metres, height above the floor. */
+/** A piece from the furniture library (src/furniture.ts): centre and size in metres, turned by `angle` degrees; its back is towards -y before turning. */
 export interface Furniture {
   id: string;
+  kind: string;
   x: number;
   y: number;
+  /** Width, depth (back to front) and height above the floor. */
   w: number;
   d: number;
   h: number;
+  angle: number;
 }
 
 /**
@@ -295,7 +298,8 @@ export function parse(text: string): Plan {
     points: raw.points,
     walls: raw.walls,
     constraints: raw.constraints,
-    furniture: Array.isArray(raw.furniture) ? raw.furniture : [],
+    // boxes older scans added had no kind: they are dropped
+    furniture: Array.isArray(raw.furniture) ? raw.furniture.filter((f: Furniture) => typeof f.kind === 'string') : [],
     openings: Array.isArray(raw.openings) ? raw.openings : [],
     joins: Array.isArray(raw.joins) ? raw.joins : [],
     stairs: Array.isArray(raw.stairs) ? raw.stairs : [],

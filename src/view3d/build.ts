@@ -5,6 +5,7 @@
 import { Plan, Vec, Wall, pointById, sameWall, wallThickness } from '../model';
 import { groupLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
 import { stairPoint } from '../stairs';
+import { furnitureOutline } from '../furniture';
 
 export type Kind = 'wall' | 'glass' | 'floor' | 'stair' | 'furniture';
 
@@ -117,9 +118,6 @@ export function buildSolids(plan: Plan): Solid[] {
     }
   }
 
-  for (const f of plan.furniture) {
-    const pts = [{ x: f.x, y: f.y }, { x: f.x + f.w, y: f.y }, { x: f.x + f.w, y: f.y + f.d }, { x: f.x, y: f.y + f.d }];
-    solids.push({ kind: 'furniture', pts, z0: 0, z1: f.h });
-  }
+  for (const f of plan.furniture) solids.push({ kind: 'furniture', pts: furnitureOutline(f), z0: 0, z1: f.h });
   return solids;
 }

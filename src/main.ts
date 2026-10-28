@@ -1,5 +1,6 @@
 import './styles.css';
 import {
+  Furniture,
   Opening,
   Plan,
   Stair,
@@ -37,6 +38,7 @@ import { History } from './history';
 import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { insideStair, newStair, stairAxes, stairCorners, stairPoint, stairTreads } from './stairs';
+import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
 import { load, loadDriveFile, save, saveDriveFile } from './storage';
 
 const POINT_HIT = 12; // px, with a mouse
@@ -52,11 +54,14 @@ type Selection =
   /** A room: its corners in order round it. */
   | { kind: 'room'; loop: string[] }
   | { kind: 'stair'; id: string }
+  | { kind: 'furniture'; id: string }
   | null;
-type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | null;
+type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | 'furniture' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
   | { kind: 'stair'; id: string; from: Vec; start: Vec; moved: boolean }
+  /** `start`: where it stood (centre and angle), so snapping to walls does not build up while dragging. */
+  | { kind: 'furniture'; id: string; from: Vec; start: { x: number; y: number; angle: number }; down: Vec; moved: boolean }
   /** `grab`: metres from the start of the opening to where it was picked up; `down`: there on screen. */
   | { kind: 'opening'; id: string; grab: number; down: Vec; moved: boolean }
   | { kind: 'pan'; x: number; y: number; moved: boolean }
@@ -71,7 +76,6 @@ const ctx = canvas.getContext('2d')!;
 const sheet = el('sheet');
 
 let plan: Plan = load();
-plan.furniture = []; // furniture is shelved for now: drop boxes older scans added
 let view = { scale: 80, ox: 40, oy: 40 };
 let selection: Selection = null;
 let drag: Drag = null;
@@ -96,6 +100,21 @@ let showGaps = (() => {
     return false;
   }
 })();
+/** Draw the furniture (and show it in 3D); off, it can be neither seen nor tapped. */
+let showFurniture = (() => {
+  try {
+    return localStorage.getItem('plan3d.showFurniture') !== '0';
+  } catch {
+    return true;
+  }
+})();
+/** The plan as the 3D view shows it: without furniture when it is hidden. */
+const plan3d = (): Plan => (showFurniture ? plan : { ...plan, furniture: [] });
+
+/** The furniture library is open in the sheet. */
+let library = false;
+/** With the furniture tool: the library piece the next tap puts down. */
+let furnitureKind = '';
 /** With showGaps off: the stretch of wall the mouse is over, as "a,b,index". */
 let hoverGap = '';
 /** Fingers or the mouse currently down, for pinch zoom. */
@@ -146,7 +165,7 @@ function restore(snapshot: string | undefined): void {
   closeSheet();
   render();
   renderUi();
-  if (!el('view3d').hidden) void import('./view3d/view').then((v) => v.show3d(plan, false));
+  if (!el('view3d').hidden) void import('./view3d/view').then((v) => v.show3d(plan3d(), false));
 }
 
 function resolve(): void {
@@ -471,6 +490,60 @@ function drawStair(st: Stair): void {
   }
 }
 
+/** A piece of furniture: its library symbol, turned with it. */
+function drawFurniture(f: Furniture): void {
+  const selected = selection?.kind === 'furniture' && selection.id === f.id;
+  const color = selected ? '#60a5fa' : '#9aa3b0';
+  const s = view.scale;
+  const c = toScreen(f);
+  const X = (fx: number) => fx * f.w * s;
+  const Y = (fy: number) => fy * f.d * s;
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate((f.angle * Math.PI) / 180);
+  ctx.fillStyle = '#1d2129';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = selected ? 2 : 1.2;
+  ctx.lineCap = 'round';
+  for (const sh of furnitureItem(f.kind).shapes) {
+    ctx.beginPath();
+    if (sh.t === 'rect') {
+      const [x0, y0, x1, y1] = [X(Math.min(sh.x0, sh.x1)), Y(Math.min(sh.y0, sh.y1)), X(Math.max(sh.x0, sh.x1)), Y(Math.max(sh.y0, sh.y1))];
+      const r = Math.min((sh.r ?? 0) * s, (x1 - x0) / 2, (y1 - y0) / 2);
+      ctx.moveTo(x0 + r, y0);
+      ctx.arcTo(x1, y0, x1, y1, r);
+      ctx.arcTo(x1, y1, x0, y1, r);
+      ctx.arcTo(x0, y1, x0, y0, r);
+      ctx.arcTo(x0, y0, x1, y0, r);
+      ctx.closePath();
+      ctx.fill();
+    } else if (sh.t === 'ellipse') {
+      ctx.ellipse(X(sh.cx), Y(sh.cy), Math.abs(X(sh.rx)), Math.abs(Y(sh.ry)), 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (sh.t === 'line') {
+      ctx.moveTo(X(sh.x0), Y(sh.y0));
+      ctx.lineTo(X(sh.x1), Y(sh.y1));
+    } else {
+      const px = Math.min(f.w, f.d) * s * 0.3;
+      if (px >= 7) {
+        ctx.fillStyle = color;
+        ctx.font = `${px}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(sh.s, X(sh.x), Y(sh.y));
+        ctx.fillStyle = '#1d2129';
+      }
+      continue;
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  if (selected) {
+    label(`${(f.w * 100).toFixed(0)} cm`, toScreen(furniturePoint(f, 0, 0.5 + 0.2 / f.d)), color, false);
+    label(`${(f.d * 100).toFixed(0)} cm`, toScreen(furniturePoint(f, 0.5 + 0.3 / f.w, 0)), color, false);
+  }
+}
+
 /** How uncertain a wall's length still is, in metres, from the last solve. */
 const wallSigma = (a: string, b: string): number | undefined => lastSolve?.wallSigma.get(wallKey(a, b));
 
@@ -572,6 +645,9 @@ function render(): void {
   const next = nextToMeasure();
   const tied = selection?.kind === 'wall' ? wallTies(plan, selection.a, selection.b) : [];
   const isTied = (a: string, b: string) => tied.find((t) => (t.a === a && t.b === b) || (t.a === b && t.b === a));
+
+  // furniture under the walls, so it does not hide them
+  if (showFurniture) for (const f of plan.furniture) drawFurniture(f);
 
   // walls
   ctx.lineCap = 'round';
@@ -943,7 +1019,7 @@ function renderUi(): void {
   document.title = plan.name ? `${plan.name} · plan3d` : 'plan3d';
   el('rename').firstElementChild!.textContent = plan.name ?? 'Name this plan';
   // only rebuild the sheet when what it shows changed, so typing is not interrupted
-  const key = JSON.stringify(selection);
+  const key = JSON.stringify([selection, library]);
   if (sheet.dataset.key !== key) {
     sheet.dataset.key = key;
     renderSheet();
@@ -951,6 +1027,7 @@ function renderUi(): void {
   el('empty').hidden = plan.points.length > 0 || tool !== null;
   el('scan').hidden = !sheet.hidden || tool !== null;
   for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) el(`tool-${t}`).classList.toggle('on', tool === t);
+  el('tool-furniture').classList.toggle('on', tool === 'furniture' || library);
 
   // one line at the top: what the tool expects, or measurements that disagree
   const conflicts = (lastSolve?.conflicts ?? []).filter((c) => c.constraint.type === 'distance');
@@ -963,6 +1040,8 @@ function renderUi(): void {
         : 'Tap where the wall starts (tap a corner to start from it).'
       : tool === 'stair'
         ? 'Tap where the stairs go. Drag them afterwards to move them.'
+        : tool === 'furniture'
+        ? `Tap where the ${furnitureItem(furnitureKind).name.toLowerCase()} goes. Near a wall it stands against it.`
         : tool
         ? tool === 'part'
           ? 'Tap the wall where a part of it is to be removed or built.'
@@ -978,7 +1057,33 @@ function renderUi(): void {
 function renderSheet(): void {
   sheet.hidden = false;
   const sel = selection;
-  if (sel?.kind === 'wall') {
+  if (library && !sel) {
+    const groups = [...new Set(LIBRARY.map((i) => i.group))];
+    sheet.innerHTML =
+      head('Furniture', 'pick one, then tap the plan') +
+      `<div class="lib">` +
+      groups
+        .map(
+          (g) =>
+            `<p class="muted">${g}</p><div class="row">` +
+            LIBRARY.filter((i) => i.group === g)
+              .map((i) => `<button class="icon" data-kind="${i.kind}" title="${i.name}, ${(i.w * 100).toFixed(0)} × ${(i.d * 100).toFixed(0)} cm">${furnitureIcon(i)}${i.name}</button>`)
+              .join('') +
+            `</div>`
+        )
+        .join('') +
+      `</div>`;
+    for (const b of sheet.querySelectorAll<HTMLButtonElement>('[data-kind]')) {
+      b.onclick = () => {
+        furnitureKind = b.dataset.kind!;
+        library = false;
+        tool = 'furniture';
+        if (!showFurniture) setShowFurniture(true);
+        render();
+        renderUi();
+      };
+    }
+  } else if (sel?.kind === 'wall') {
     const a = pointById(plan, sel.a);
     const b = pointById(plan, sel.b);
     if (!a || !b) return closeSheet();
@@ -1143,6 +1248,44 @@ function renderSheet(): void {
       closeSheet();
       render();
     };
+  } else if (sel?.kind === 'furniture') {
+    const f = plan.furniture.find((x) => x.id === sel.id);
+    if (!f) return closeSheet();
+    const update = (change: () => void) => {
+      change();
+      snapToWalls(plan, f, false);
+      commit();
+      sheet.dataset.key = '';
+      render();
+      renderUi();
+    };
+    sheet.innerHTML =
+      head(furnitureItem(f.kind).name, 'drag to move') +
+      numberRow(f.w, f.w * 100, (m) => update(() => (f.w = m)), { id: 'fuW', label: 'Width', focus: false }) +
+      numberRow(f.d, f.d * 100, (m) => update(() => (f.d = m)), { id: 'fuD', label: 'Depth', focus: false }) +
+      numberRow(f.h, f.h * 100, (m) => update(() => (f.h = m)), { id: 'fuH', label: 'Height', focus: false }) +
+      `<div class="row">` +
+      `<button id="fuRot" class="icon" title="Turn a quarter turn"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Turn 90°</button>` +
+      `<button id="fuDup" class="icon" title="Put a copy beside it"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Copy</button>` +
+      `<button id="fuDel" class="icon danger" title="Delete this piece"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
+      `</div>`;
+    el('fuRot').onclick = () => update(() => (f.angle = (f.angle + 90) % 360));
+    el('fuDup').onclick = () => {
+      // beside it, along its width: kitchen units or chairs in a row
+      const copy = { ...f, id: newId(), ...furniturePoint(f, 1 + 0.02 / f.w, 0) };
+      snapToWalls(plan, copy, false);
+      plan.furniture.push(copy);
+      selection = { kind: 'furniture', id: copy.id };
+      commit();
+      render();
+      renderUi();
+    };
+    el('fuDel').onclick = () => {
+      plan.furniture = plan.furniture.filter((x) => x.id !== f.id);
+      commit();
+      closeSheet();
+      render();
+    };
   } else if (sel?.kind === 'room') {
     const loop = selectedRoom();
     if (!loop) return closeSheet();
@@ -1229,6 +1372,7 @@ function renderSheet(): void {
 
 function closeSheet(): void {
   selection = null;
+  library = false;
   renderUi();
 }
 
@@ -1251,6 +1395,7 @@ function setTool(t: Tool): void {
   stopWall();
   tool = t;
   selection = null;
+  library = false;
   resolve();
 }
 
@@ -1343,6 +1488,7 @@ canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
   e.preventDefault(); // no emulated mouse events: they would move the focus away from the number field
   el('menu').hidden = true;
+  library = false;
 
   // a second finger turns whatever the first one started into a pinch
   if (pointers.size === 2) {
@@ -1384,12 +1530,15 @@ canvas.addEventListener('pointerdown', (e) => {
 
   if (tool === 'wall') return wallTap(pos, tol);
   if (tool === 'stair') return stairTap(pos);
+  if (tool === 'furniture') return furnitureTap(pos);
   if (tool) return openingTap(pos, tol);
 
   const pid = hitPoint(pos.x, pos.y, tol);
   const oid = pid ? undefined : hitOpening(pos.x, pos.y, tol);
-  const w = pid || oid ? undefined : hitWall(pos.x, pos.y, tol);
-  const st = pid || oid || w ? undefined : [...plan.stairs].reverse().find((x) => insideStair(x, cursor));
+  // before walls: a piece stands against a wall, and a tap on its back half is meant for it
+  const fu = pid || oid || !showFurniture ? undefined : [...plan.furniture].reverse().find((x) => insideFurniture(x, cursor));
+  const w = pid || oid || fu ? undefined : hitWall(pos.x, pos.y, tol);
+  const st = pid || oid || fu || w ? undefined : [...plan.stairs].reverse().find((x) => insideStair(x, cursor));
   if (pid) {
     selection = { kind: 'point', id: pid };
     drag = { kind: 'point', id: pid, moved: false };
@@ -1397,6 +1546,9 @@ canvas.addEventListener('pointerdown', (e) => {
     selection = { kind: 'opening', id: oid };
     const o = plan.openings.find((x) => x.id === oid)!;
     drag = { kind: 'opening', id: oid, grab: alongWall(o.a, o.b, cursor) - o.at, down: pos, moved: false };
+  } else if (fu) {
+    selection = { kind: 'furniture', id: fu.id };
+    drag = { kind: 'furniture', id: fu.id, from: cursor, start: { x: fu.x, y: fu.y, angle: fu.angle }, down: pos, moved: false };
   } else if (w) {
     selection = { kind: 'wall', a: w.a, b: w.b };
   } else if (st) {
@@ -1442,6 +1594,17 @@ canvas.addEventListener('pointermove', (e) => {
     if (st) {
       st.x = d.start.x + cursor.x - d.from.x;
       st.y = d.start.y + cursor.y - d.from.y;
+      d.moved = true;
+    }
+    render();
+  } else if (drag?.kind === 'furniture') {
+    const d = drag;
+    const f = plan.furniture.find((x) => x.id === d.id);
+    if (f && (d.moved || dist(pos, d.down) > 6)) {
+      f.x = d.start.x + cursor.x - d.from.x;
+      f.y = d.start.y + cursor.y - d.from.y;
+      f.angle = d.start.angle;
+      snapToWalls(plan, f, true);
       d.moved = true;
     }
     render();
@@ -1496,7 +1659,7 @@ const pointerEnd = (e: PointerEvent) => {
     return;
   }
   const moved = drag?.kind === 'point' && drag.moved;
-  if (drag?.kind === 'stair' && drag.moved) commit();
+  if ((drag?.kind === 'stair' || drag?.kind === 'furniture') && drag.moved) commit();
   if (drag?.kind === 'room') {
     const moved = drag.moved;
     drag = null;
@@ -1514,6 +1677,18 @@ const pointerEnd = (e: PointerEvent) => {
   if (moved) resolve();
   if (tapped) tapRoom(eventPos(e));
 };
+
+/** Furniture tool: the picked piece where tapped, against the wall when near one. */
+function furnitureTap(pos: Vec): void {
+  const f = newFurniture(furnitureKind, toWorld(pos.x, pos.y));
+  snapToWalls(plan, f, true);
+  plan.furniture.push(f);
+  tool = null;
+  selection = { kind: 'furniture', id: f.id };
+  commit();
+  render();
+  renderUi();
+}
 
 /** Stairs tool: a flight centred where tapped, then its panel for the size. */
 function stairTap(pos: Vec): void {
@@ -1578,9 +1753,71 @@ canvas.addEventListener(
   { passive: false }
 );
 
+const ARROWS: Record<string, Vec> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
+/** Something was moved with the arrow keys: solved and recorded once the key is let go, not at every repeat. */
+let nudged = false;
+
+/**
+ * Moves the selection `step` metres the way an arrow key points: a door,
+ * window or wall part slides along its wall (the arrow closest to the wall's
+ * direction), anything else moves freely. False when nothing selected moves.
+ */
+function nudge(dir: Vec, step: number): boolean {
+  const sel = selection;
+  const d = { x: dir.x * step, y: dir.y * step };
+  const shift = (p: PlanPoint) => {
+    p.x += d.x;
+    p.y += d.y;
+    p.sensor = { x: p.x, y: p.y };
+  };
+  if (sel?.kind === 'point') {
+    const p = pointById(plan, sel.id);
+    if (!p) return false;
+    shift(p);
+  } else if (sel?.kind === 'wall') {
+    for (const id of [sel.a, sel.b]) {
+      const p = pointById(plan, id);
+      if (p) shift(p);
+    }
+  } else if (sel?.kind === 'opening') {
+    const o = plan.openings.find((x) => x.id === sel.id);
+    const a = o && pointById(plan, o.a);
+    const b = o && pointById(plan, o.b);
+    if (!o || !a || !b) return false;
+    const u = unit(sub(b, a));
+    const along = dir.x * u.x + dir.y * u.y;
+    if (Math.abs(along) < 0.5) return true; // an arrow across the wall: nothing to do, but the key is still used
+    o.at = Math.max(0, Math.min(dist(a, b) - o.width, o.at + Math.sign(along) * step));
+  } else if (sel?.kind === 'room') {
+    moveRoom(plan, sel.loop[0], d);
+  } else if (sel?.kind === 'stair' || sel?.kind === 'furniture') {
+    const x = sel.kind === 'stair' ? plan.stairs.find((s) => s.id === sel.id) : plan.furniture.find((f) => f.id === sel.id);
+    if (!x) return false;
+    x.x += d.x;
+    x.y += d.y;
+  } else {
+    return false;
+  }
+  nudged = true;
+  render();
+  return true;
+}
+
+window.addEventListener('keyup', (e) => {
+  if (!nudged || !ARROWS[e.key]) return;
+  nudged = false;
+  if (selection?.kind === 'stair' || selection?.kind === 'furniture') commit();
+  else resolve(); // corners moved: the solver settles them, and joined rooms follow a door
+  sheet.dataset.key = '';
+  renderUi();
+});
+
 window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) {
     if (e.key === 'Escape') closeSheet();
+    // the panel's number field has the focus but nothing typed in it yet: arrows still move the selection
+    const untouched = sheet.contains(e.target) && e.target.value === e.target.defaultValue;
+    if (untouched && ARROWS[e.key] && nudge(ARROWS[e.key], e.shiftKey ? 0.1 : 0.01)) e.preventDefault();
     return;
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -1591,6 +1828,10 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
     e.preventDefault();
     restore(history.redo());
+    return;
+  }
+  if (ARROWS[e.key] && nudge(ARROWS[e.key], e.shiftKey ? 0.1 : 0.01)) {
+    e.preventDefault();
     return;
   }
   if (e.key === 'Escape' && (joinFrom || tiePick)) {
@@ -1605,6 +1846,7 @@ window.addEventListener('keydown', (e) => {
   if (sel?.kind === 'point') removePoint(plan, sel.id);
   else if (sel?.kind === 'opening') plan.openings = plan.openings.filter((x) => x.id !== sel.id);
   else if (sel?.kind === 'stair') plan.stairs = plan.stairs.filter((x) => x.id !== sel.id);
+  else if (sel?.kind === 'furniture') plan.furniture = plan.furniture.filter((x) => x.id !== sel.id);
   else return;
   selection = null;
   resolve();
@@ -1693,6 +1935,32 @@ el('gaps').onclick = () => {
 };
 renderGapsToggle();
 
+function setShowFurniture(on: boolean): void {
+  showFurniture = on;
+  try {
+    localStorage.setItem('plan3d.showFurniture', on ? '1' : '0');
+  } catch {
+    // storage blocked: the choice lasts until the page is reloaded
+  }
+  el('furnitureToggle').lastElementChild!.textContent = on ? '✓' : '';
+  if (!on && selection?.kind === 'furniture') selection = null;
+  if (!el('view3d').hidden) void import('./view3d/view').then((v) => v.show3d(plan3d(), false));
+}
+el('furnitureToggle').onclick = () => {
+  setShowFurniture(!showFurniture);
+  render();
+  renderUi();
+};
+setShowFurniture(showFurniture);
+
+el('tool-furniture').onclick = () => {
+  const open = tool === 'furniture' || library;
+  setTool(null);
+  if (open) return;
+  library = true;
+  renderUi();
+};
+
 for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) {
   el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);
 }
@@ -1776,7 +2044,7 @@ function importSummary(before: Plan, after: Plan): string {
 // ---------- 3D view ----------
 
 // three.js only loads when the view is first opened
-el('open3d').onclick = async () => (await import('./view3d/view')).show3d(plan);
+el('open3d').onclick = async () => (await import('./view3d/view')).show3d(plan3d());
 el('close3d').onclick = async () => (await import('./view3d/view')).hide3d();
 
 const heightInput = el<HTMLInputElement>('height3d');
@@ -1786,7 +2054,7 @@ async function setHeight(): Promise<void> {
     plan.height = Math.round(cm) / 100;
     commit();
   }
-  (await import('./view3d/view')).show3d(plan, false);
+  (await import('./view3d/view')).show3d(plan3d(), false);
 }
 el('heightForm').onsubmit = (e) => {
   e.preventDefault();
