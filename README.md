@@ -1,8 +1,50 @@
-# plan3d
+<p align="center"><img src="public/icon-192.png" width="96" alt=""></p>
 
-Floor plans from a phone: capture a room roughly, tighten it with the measurements you trust, view it in 3D.
+<h1 align="center">plan3d</h1>
 
-Static site, everything runs in the browser (TypeScript + Vite, no backend), so it deploys as is to GitHub Pages.
+<p align="center"><b>Floor plans from your phone.</b><br>Scan a room, type in the few measurements you trust, furnish it, and walk around it in 3D.</p>
+
+<p align="center"><a href="https://apiel.github.io/plan3d/"><b>Open the app →</b></a></p>
+
+<p align="center">
+  <img src="docs/screenshots/phone-plan.png" width="250" alt="The plan editor on a phone: a flat with three rooms, furniture, doors and windows">
+  <img src="docs/screenshots/phone-window.png" width="250" alt="A window's panel: width, where the frame sits in the wall, open below">
+  <img src="docs/screenshots/phone-3d.png" width="250" alt="The same flat in 3D">
+</p>
+
+Renovating means measuring the same wall three times because the numbers got lost, and drawing plans that are out of date by the next weekend. plan3d keeps the plan on the phone you already carry. No LiDAR, no extra hardware, no account, nothing to install from a store.
+
+## What it does
+
+- 📱 **Scan a room with the phone camera.** Walk around and the outline builds itself from the phone's depth sensing (WebXR in Chrome, on Android phones with ARCore depth; tried on a Pixel 9a). Mark corners, doors, windows and stairs while you scan if you want.
+- 📏 **Make it exact with the measurements you trust.** Type a wall length from your tape or laser and mark the right angles. A least-squares solver fits everything together, and shows which wall is worth measuring next.
+- 🏠 **Build the whole flat.** Join rooms through their shared doors and they snap into place across the wall.
+- 🪟 **Doors and windows the way they really are.** Door hinge side and swing, window frame depth in the wall, and niches under windows that furniture can slide into.
+- 🛋️ **Furnish it.** A library of bathroom, kitchen, bedroom, living and office pieces at their usual sizes. They snap against walls and into corners, and you can resize any of them.
+- 🧊 **See it in 3D.** Walls, openings, windows, stairs and furniture, at your real ceiling height.
+- 🔒 **Your plans stay yours.** Everything runs in the browser. Plans are kept on the device, export as an SVG drawing with the data inside, and optionally save to your own Google Drive.
+- 🤖 **Edit with an AI chat.** The exported SVG carries instructions, so you can hand it to an AI assistant ("move the kitchen wall 30 cm") and import the result back.
+- 📲 **Installable.** Add it to the home screen and it works offline like a regular app.
+
+<p align="center">
+  <img src="docs/screenshots/desktop-plan.png" width="49%" alt="The plan editor on a computer">
+  <img src="docs/screenshots/desktop-3d.png" width="49%" alt="The 3D view on a computer">
+</p>
+
+## Get started
+
+1. Open **<https://apiel.github.io/plan3d/>** in Chrome on an Android phone (⋮ > **Install app** puts it on the home screen).
+2. Tap **Scan room**, aim at the walls and walk slowly around the room, then **Finish**.
+3. Tap a wall to type its measured length, and tap the corners that are square.
+4. Add furniture with the sofa button, then tap **3D**.
+
+At a computer, the same editor works with a mouse and keyboard: draw walls by hand, use the arrow keys to nudge things, Ctrl+Z to undo, and Ctrl+S to save to Google Drive.
+
+The screenshots show a made-up demo flat (`scripts/demo-plan.ts`). `scripts/screenshots.mjs` takes them again.
+
+---
+
+The rest of this page is the full documentation: how each part works, and how to run and develop the app.
 
 ## Idea
 
@@ -106,6 +148,7 @@ Result on a Pixel 9a: depth works, measurements are "not perfect, but not bad". 
 | `src/scan/extract.ts` | Keyframes to room outline (see above). |
 | `src/scan/extract.test.ts` | Extraction tests on synthetic rooms. |
 | `scripts/replay.ts` | Replays a downloaded scan through the extraction and writes an SVG. |
+| `scripts/demo-plan.ts`, `scripts/screenshots.mjs` | The made-up demo flat, and the README screenshots taken from it with headless Chrome (`docs/screenshots/`). |
 | `src/storage.ts` | Plan persistence in `localStorage`. |
 | `src/planfile.ts` | The plan as an SVG file: a drawing carrying the plan JSON in `<metadata>` and instructions for an AI editing it; reading .svg or .json back with checks. |
 | `src/xr.ts` | WebXR matrix helpers shared by the scan code. |
