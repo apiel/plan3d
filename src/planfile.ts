@@ -24,6 +24,7 @@ If you are an AI assistant asked to change this plan:
 
 The JSON:
   * Units are metres, angles degrees. x goes right, y goes DOWN.
+  * name: the project's name (optional), also used as the file name.
   * points: corners {id, x, y, sensor: {x, y}}. sensor is where the camera put the
     corner; for a new corner, make sensor the same as x, y.
   * walls: {a, b, thickness?, color?}: a straight wall between corners a and b. The
@@ -184,7 +185,7 @@ export function planToSvg(plan: Plan): string {
     `<!--${INSTRUCTIONS}-->`,
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${cm(minX)} ${cm(minY)} ${cm(w)} ${cm(h)}" width="${Math.round(w * 160)}" height="${Math.round(h * 160)}" font-family="system-ui, sans-serif" stroke-linecap="round">`,
     '<style>text { text-anchor: middle; dominant-baseline: middle; }</style>',
-    '<title>plan3d floor plan</title>',
+    `<title>${plan.name ? xml(plan.name) : 'plan3d floor plan'}</title>`,
     '<desc>Floor plan made with plan3d. The plan data is the JSON in the metadata element; see the comment at the top of the file before editing it.</desc>',
     `<metadata id="${DATA_ID}">`,
     xml(serialize(plan)),
@@ -195,6 +196,15 @@ export function planToSvg(plan: Plan): string {
     '',
   ].join('\n');
 }
+
+/** A file name for the plan: its name without characters file systems refuse, or "plan3d". */
+export function planFileName(plan: Plan, ext: string): string {
+  const base = (plan.name ?? '').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '-').trim() || 'plan3d';
+  return `${base}.${ext}`;
+}
+
+/** The plan name a file name suggests: "Flat 2.svg" gives "Flat 2". */
+export const nameFromFile = (file: string): string => file.replace(/\.(svg|json)$/i, '').trim();
 
 /** A plan from an exported file: the SVG's metadata, or a plain JSON file. Throws with what is wrong. */
 export function readPlanFile(text: string): Plan {

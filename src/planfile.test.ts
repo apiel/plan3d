@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { addPoint, newId, parse, roomFromCorners, serialize, setDistance } from './model';
-import { planToSvg, readPlanFile } from './planfile';
+import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile';
 import { joinWallEnds, roomAt, setRoomName } from './rooms';
 
 const sample = () => {
@@ -52,5 +52,16 @@ describe('the plan as an SVG file', () => {
     plan.openings[0].a = 'gone';
     expect(() => readPlanFile(planToSvg(plan))).toThrow(/does not exist[\s\S]*not on a wall/);
     expect(() => readPlanFile('<svg></svg>')).toThrow(/no plan data/);
+  });
+
+  it('keeps the plan name, as the title and the file name', () => {
+    const plan = sample();
+    plan.name = 'Flat <2>';
+    const svg = planToSvg(plan);
+    expect(svg).toContain('<title>Flat &lt;2&gt;</title>');
+    expect(readPlanFile(svg).name).toBe('Flat <2>');
+    expect(planFileName(plan, 'svg')).toBe('Flat -2-.svg');
+    expect(planFileName(sample(), 'json')).toBe('plan3d.json');
+    expect(nameFromFile('House 2.SVG')).toBe('House 2');
   });
 });

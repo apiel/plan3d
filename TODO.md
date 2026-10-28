@@ -29,5 +29,5 @@
 - AI export with instruction...
 
 
-- Give a way to name the file for save... give a name to the whole project
+- ~~Give a way to name the file for save... give a name to the whole project~~ done: the ⋯ menu shows the plan's name (tap to rename), exports and Drive use it as the file name, and Drive saving goes back into the file the plan was loaded from. Not tried yet on Drive.
 - ~~save the plan as SVG with metadata, so an AI chat can edit it~~ done: "Export plan (SVG)" writes a drawing of the plan with the plan JSON (exactly what "Export plan (JSON)" gives) in `<metadata id="plan3d-data">` and instructions for an AI in a comment at the top (`src/planfile.ts`). "Import plan" takes .svg or .json, ignores the drawing, checks the plan (missing ids, bad numbers) and says what changed; undo goes back. Not tried yet with Claude / ChatGPT / Gemini.

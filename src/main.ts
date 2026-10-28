@@ -30,14 +30,14 @@ import {
   wallThickness,
   wallTies,
 } from './model';
-import { planToSvg, readPlanFile } from './planfile';
-import { driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
+import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile';
+import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
 import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { insideStair, newStair, stairAxes, stairCorners, stairPoint, stairTreads } from './stairs';
-import { load, save } from './storage';
+import { load, loadDriveFile, save, saveDriveFile } from './storage';
 
 const POINT_HIT = 12; // px, with a mouse
 const WALL_HIT = 8; // px, with a mouse
@@ -857,6 +857,8 @@ function numberRow(
 }
 
 function renderUi(): void {
+  document.title = plan.name ? `${plan.name} · plan3d` : 'plan3d';
+  el('rename').firstElementChild!.textContent = plan.name ?? 'Name this plan';
   // only rebuild the sheet when what it shows changed, so typing is not interrupted
   const key = JSON.stringify(selection);
   if (sheet.dataset.key !== key) {
@@ -1568,6 +1570,19 @@ el('menu').addEventListener('click', () => {
 
 el('scanData').onclick = downloadScan;
 
+/** Asks for the plan's name. False when cancelled. */
+function askName(why = ''): boolean {
+  const name = prompt(`${why}Name of this plan:`, plan.name ?? '');
+  if (name === null) return false;
+  if (name.trim()) plan.name = name.trim();
+  else delete plan.name;
+  commit();
+  renderUi();
+  return true;
+}
+
+el('rename').onclick = () => askName();
+
 for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) {
   el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);
 }
@@ -1587,6 +1602,7 @@ el('square').onclick = () => {
 el('clear').onclick = () => {
   if (plan.points.length && !confirm('Clear the whole plan?')) return;
   plan = emptyPlan();
+  setDriveFile(null);
   selection = null;
   resolve();
 };
@@ -1601,8 +1617,14 @@ function download(text: string, type: string, name: string): void {
 }
 
 // the SVG is a picture of the plan carrying the same JSON, to share or to have an AI edit
-el('export').onclick = () => download(planToSvg(plan), 'image/svg+xml', 'plan3d.svg');
-el('exportJson').onclick = () => download(serialize(plan), 'application/json', 'plan3d.json');
+el('export').onclick = () => download(planToSvg(plan), 'image/svg+xml', planFileName(plan, 'svg'));
+el('exportJson').onclick = () => download(serialize(plan), 'application/json', planFileName(plan, 'json'));
+
+/** A plan read from a file without a name of its own takes the file's ("Flat 2.svg": "Flat 2"). */
+function nameFrom(file: string): void {
+  const name = nameFromFile(file);
+  if (!plan.name && name && name !== 'plan3d') plan.name = name;
+}
 
 el('import').onclick = () => el<HTMLInputElement>('file').click();
 el<HTMLInputElement>('file').onchange = async (e) => {
@@ -1613,6 +1635,9 @@ el<HTMLInputElement>('file').onchange = async (e) => {
   try {
     const before = plan;
     plan = readPlanFile(await file.text());
+    nameFrom(file.name);
+    // another plan (or a copy): Drive saving goes by its name, not into the file loaded before
+    if (plan.name !== before.name) setDriveFile(null);
     selection = null;
     fit();
     resolve(); // one undo step: undo goes back to the plan before the import
@@ -1645,11 +1670,19 @@ if (driveEnabled) {
   el('driveLoad').hidden = false;
 }
 
+// the Drive file this plan was loaded from or last saved to
+let driveFile = loadDriveFile();
+function setDriveFile(file: DriveFile | null): void {
+  driveFile = file;
+  saveDriveFile(file);
+}
+
 el('driveSave').onclick = async () => {
+  if (!plan.name && !askName('Saved in Google Drive under its name. ')) return;
   try {
     showScanMsg('Saving to Google Drive…');
-    await saveToDrive(planToSvg(plan));
-    showScanMsg('Saved to Google Drive');
+    setDriveFile(await saveToDrive(planToSvg(plan), planFileName(plan, 'svg'), driveFile));
+    showScanMsg(`Saved to Google Drive as ${driveFile!.name}`);
   } catch (err) {
     showScanMsg(`Could not save: ${(err as Error).message}`);
   }
@@ -1659,12 +1692,15 @@ el('driveSave').onclick = async () => {
 el('driveLoad').onclick = async () => {
   try {
     showScanMsg('Loading from Google Drive…');
-    const text = pickerEnabled ? await pickFromDrive() : await loadFromDrive();
-    if (text === null) return showScanMsg(pickerEnabled ? null : 'No plan saved in Google Drive yet');
-    if (plan.points.length && !confirm('Replace the current plan with the one from Google Drive?')) {
+    const got = pickerEnabled ? await pickFromDrive() : await loadFromDrive();
+    if (got === null) return showScanMsg(pickerEnabled ? null : 'No plan saved in Google Drive yet');
+    if (plan.points.length && !confirm(`Replace the current plan with ${got.file.name} from Google Drive?`)) {
       return showScanMsg(null);
     }
-    plan = readPlanFile(text);
+    plan = readPlanFile(got.text);
+    nameFrom(got.file.name);
+    // an old .json save becomes an .svg next to it on the next save
+    setDriveFile(/\.svg$/i.test(got.file.name) ? got.file : null);
     selection = null;
     fit();
     resolve();

@@ -38,6 +38,8 @@ button:disabled { opacity: .4; cursor: default; }
 #menu[hidden] { display: none; }
 #menu button, #menu a { text-align: left; background: none; border: 0; padding: .65rem .75rem; border-radius: .4rem; text-decoration: none; color: var(--text); }
 #menu button.danger { color: var(--warn); }
+#menu button.name { display: flex; justify-content: space-between; gap: .75rem; font-weight: 600; border-bottom: 1px solid var(--line); border-radius: .4rem .4rem 0 0; margin-bottom: .2rem; max-width: 15rem; }
+#menu button.name span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #menu a { color: var(--muted); font-size: .9rem; }
 #menu button:hover, #menu a:hover { background: #2a2f38; }
 

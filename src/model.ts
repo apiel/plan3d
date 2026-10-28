@@ -95,6 +95,8 @@ export interface Stair {
 }
 
 export interface Plan {
+  /** The project's name: file names for exports and Drive. */
+  name?: string;
   points: PlanPoint[];
   walls: Wall[];
   constraints: Constraint[];
@@ -286,6 +288,7 @@ export function parse(text: string): Plan {
     delete x.change;
   }
   return {
+    ...(typeof raw.name === 'string' && raw.name.trim() ? { name: raw.name.trim() } : {}),
     points: raw.points,
     walls: raw.walls,
     constraints: raw.constraints,
