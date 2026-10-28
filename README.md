@@ -18,6 +18,12 @@ Renovating means measuring the same wall three times because the numbers got los
 
 Room-scanning apps usually need an iPhone Pro with LiDAR, or a laser and an afternoon of tapping corners. plan3d does it with the depth sensing that ordinary Android phones already have, straight from a web page (WebXR in Chrome; developed on a Pixel 9a). Tap **Scan room**, turn slowly and walk around, tap **Finish**. You don't draw anything: the plan builds itself.
 
+<p align="center"><img src="docs/screenshots/phone-scan.png" width="300" alt="The scan screen: the camera view with marked corners, a marked window, a door being marked with its width under the cross, the mini map of what has been seen, and the mark buttons"></p>
+
+<p align="center"><sub>The scan screen, halfway through marking a door. (A mock-up: the real overlay over a drawn room, since the AR camera view cannot be captured without the phone.)</sub></p>
+
+The scanner turns those depth readings into a plan:
+
 <p align="center"><img src="docs/scan.svg" width="100%" alt="Left: thousands of depth points seen from above, with the path the phone took through an L-shaped room. Right: the room plan3d extracted: six walls with their lengths, the sofa, and the open doorway."></p>
 
 From a few thousand depth points, the scanner works out:
@@ -59,7 +65,7 @@ Phone depth is rough, a few cm off. That's where the second half of plan3d comes
 
 At a computer, the same editor works with a mouse and keyboard: draw walls by hand, use the arrow keys to nudge things, Ctrl+Z to undo, and Ctrl+S to save to Google Drive.
 
-The screenshots show a made-up demo flat (`scripts/demo-plan.ts`). `scripts/screenshots.mjs` takes them again, and `scripts/scan-figure.ts` redraws the scan figure.
+The screenshots show a made-up demo flat (`scripts/demo-plan.ts`). `scripts/screenshots.mjs` takes them again (the scan screen as a mock-up), and `scripts/scan-figure.ts` redraws the scan figure.
 
 ---
 
