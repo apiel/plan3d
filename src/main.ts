@@ -88,6 +88,16 @@ let labelBoxes: { a: string; b: string; x: number; y: number; w: number; h: numb
 let joinFrom: string | null = null;
 /** Wall waiting for a second wall to be tapped, to make them parallel or the same length. */
 let tiePick: { type: WallTie; a: string; b: string } | null = null;
+/** Show the distances between doors, windows and wall ends on every wall; when off, only on the selected or hovered wall. */
+let showGaps = (() => {
+  try {
+    return localStorage.getItem('plan3d.showGaps') === '1';
+  } catch {
+    return false;
+  }
+})();
+/** With showGaps off: the stretch of wall the mouse is over, as "a,b,index". */
+let hoverGap = '';
 /** Fingers or the mouse currently down, for pinch zoom. */
 const pointers = new Map<number, Vec>();
 
@@ -661,6 +671,16 @@ function render(): void {
     drawAlongWall(p, p.id, other);
     if (own.length === 1 && other) drawGap(p, p.id, other);
   }
+
+  // doors and windows: how far from each other and from the wall's ends; when not shown on
+  // every wall, on the selected wall (or the selected opening's) and the stretch under the mouse
+  const sel = selection;
+  const selOpening = sel?.kind === 'opening' ? plan.openings.find((o) => o.id === sel.id) : undefined;
+  const [ha, hb, hi] = hoverGap.split(',');
+  for (const wall of plan.walls) {
+    if (showGaps || (sel?.kind === 'wall' && sameWall(wall, sel.a, sel.b)) || (selOpening && sameWall(wall, selOpening.a, selOpening.b))) drawWallGaps(wall);
+    else if (wall.a === ha && wall.b === hb) drawWallGaps(wall, +hi);
+  }
   if (tool === 'wall') {
     if (wallFrom && !plan.walls.some((w) => w.a === wallFrom || w.b === wallFrom)) drawAlongWall(pointById(plan, wallFrom)!, wallFrom);
     drawAlongWall(wallEnd(cursor, hitTol));
@@ -778,6 +798,52 @@ function drawGap(p: Vec, skip: string, from: Vec): void {
   if (best === Infinity) return;
   const sp = toScreen(p);
   dimension(sp, toScreen({ x: p.x + d.x * best, y: p.y + d.y * best }), best);
+}
+
+/** The stretches of a wall between its ends and its doors, windows and parts, in metres from `a`. Empty without openings. */
+function wallGaps(wall: Wall): { s0: number; s1: number }[] {
+  const a = pointById(plan, wall.a);
+  const b = pointById(plan, wall.b);
+  if (!a || !b) return [];
+  const len = dist(a, b);
+  const cuts = plan.openings
+    .filter((o) => sameWall(wall, o.a, o.b))
+    .map((o) => (o.a === wall.a ? [o.at, o.at + o.width] : [len - o.at - o.width, len - o.at]))
+    .sort((p, q) => p[0] - q[0]);
+  if (!cuts.length) return [];
+  const out: { s0: number; s1: number }[] = [];
+  let from = 0;
+  for (const [c0, c1] of cuts) {
+    if (c0 - from > 0.005) out.push({ s0: from, s1: c0 });
+    from = Math.max(from, c1);
+  }
+  if (len - from > 0.005) out.push({ s0: from, s1: len });
+  return out;
+}
+
+/** The wall and stretch of it under the mouse, as "a,b,index", or ''. */
+function gapAt(pos: Vec): string {
+  const wall = nearestWall(pos, Math.max(WALL_HIT, 0.25 * view.scale));
+  if (!wall) return '';
+  const s = alongWall(wall.a, wall.b, toWorld(pos.x, pos.y));
+  const i = wallGaps(wall).findIndex((g) => g.s0 <= s && s <= g.s1);
+  return i < 0 ? '' : `${wall.a},${wall.b},${i}`;
+}
+
+/** Dimension lines along a wall, inside its room, for the stretches between its ends and openings (only stretch `only` if given). */
+function drawWallGaps(wall: Wall, only?: number): void {
+  const a = pointById(plan, wall.a)!;
+  const b = pointById(plan, wall.b)!;
+  const u = unit(sub(b, a));
+  let n = { x: -u.y, y: u.x };
+  if (!insideRoom(plan, roomIdsOf(plan, wall.a), { x: (a.x + b.x) / 2 + n.x * 0.05, y: (a.y + b.y) / 2 + n.y * 0.05 })) n = { x: -n.x, y: -n.y };
+  const off = { x: n.x * 16, y: n.y * 16 };
+  wallGaps(wall).forEach((g, i) => {
+    if (only !== undefined && i !== only) return;
+    const s1 = toScreen({ x: a.x + u.x * g.s0, y: a.y + u.y * g.s0 });
+    const s2 = toScreen({ x: a.x + u.x * g.s1, y: a.y + u.y * g.s1 });
+    dimension({ x: s1.x + off.x, y: s1.y + off.y }, { x: s2.x + off.x, y: s2.y + off.y }, g.s1 - g.s0);
+  });
 }
 
 /** The angle at a corner with two walls, in degrees. */
@@ -1397,6 +1463,12 @@ canvas.addEventListener('pointermove', (e) => {
     render();
   } else if (tool === 'wall') {
     render();
+  } else if (!drag && e.pointerType === 'mouse' && !showGaps) {
+    const g = gapAt(pos);
+    if (g !== hoverGap) {
+      hoverGap = g;
+      render();
+    }
   }
 });
 
@@ -1474,6 +1546,11 @@ function joinTap(targetId: string): void {
 }
 canvas.addEventListener('pointerup', pointerEnd);
 canvas.addEventListener('pointercancel', pointerEnd);
+canvas.addEventListener('pointerleave', () => {
+  if (!hoverGap) return;
+  hoverGap = '';
+  render();
+});
 
 canvas.addEventListener(
   'wheel',
@@ -1583,6 +1660,22 @@ function askName(why = ''): boolean {
 }
 
 el('rename').onclick = () => askName();
+
+function renderGapsToggle(): void {
+  el('gaps').lastElementChild!.textContent = showGaps ? '✓' : '';
+}
+el('gaps').onclick = () => {
+  showGaps = !showGaps;
+  hoverGap = '';
+  try {
+    localStorage.setItem('plan3d.showGaps', showGaps ? '1' : '0');
+  } catch {
+    // storage blocked: the choice lasts until the page is reloaded
+  }
+  renderGapsToggle();
+  render();
+};
+renderGapsToggle();
 
 for (const t of ['wall', 'door', 'window', 'part', 'stair'] as const) {
   el(`tool-${t}`).onclick = () => setTool(tool === t ? null : t);

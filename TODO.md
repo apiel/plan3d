@@ -34,4 +34,4 @@
 
 
 
-- we need to be able to see the window and door distance from the wholes.... kind of the same way as wall which are not connected. I am just worried that there is too much number.... maybe we would need a toggle... and also when toggle is off, if we put the more over a wall between 2 window or between a window and wall, ... it would show the value.
+- ~~we need to be able to see the window and door distance from the wholes.... kind of the same way as wall which are not connected. I am just worried that there is too much number.... maybe we would need a toggle... and also when toggle is off, if we put the more over a wall between 2 window or between a window and wall, ... it would show the value.~~ done: blue dimension lines inside the room between wall ends, doors, windows and parts. ⋯ > "Door & window distances" shows them on every wall; off, the mouse over a stretch of wall shows that one, and a selected wall, door or window shows its wall's (also while dragging it). Not yet: typing a distance to move an opening.
