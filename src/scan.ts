@@ -563,6 +563,9 @@ function addRoomToPlan(scan: RoomScan): void {
   plan.points.push(...room.points);
   plan.walls.push(...room.walls);
   plan.constraints.push(...room.constraints);
+  // the first scan that saw the ceiling gives the plan its height
+  const height = scan.ceilingY - scan.floorY;
+  if (plan.height === undefined && height > 2 && height < 4) plan.height = Math.round(height * 100) / 100;
   for (const st of scan.stairs) plan.stairs.push({ id: newId(), ...st, x: st.x + shift });
   // furniture boxes (scan.furniture) are left out of the plan for now
   for (const o of scan.openings) {

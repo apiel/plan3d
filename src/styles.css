@@ -29,7 +29,15 @@ button:disabled { opacity: .4; cursor: default; }
 #info { top: .75rem; }
 #tools { position: fixed; top: 4.25rem; right: .75rem; display: flex; flex-direction: column; gap: .5rem; }
 #tools .round { position: static; }
-#undo { margin-top: .5rem; }
+#undo, #open3d { margin-top: .5rem; }
+#open3d { font-size: .9rem; font-weight: 700; }
+
+#view3d { position: fixed; inset: 0; z-index: 2; background: var(--bg); }
+#view3d[hidden] { display: none; }
+#canvas3d { width: 100%; height: 100%; display: block; touch-action: none; }
+#heightForm { bottom: calc(.75rem + env(safe-area-inset-bottom)); right: .75rem; display: flex; flex-wrap: wrap; align-items: center; gap: .25rem 1rem; }
+#heightForm input { width: 4rem; padding: .3rem .4rem; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: .35rem; }
+#heightForm .muted { font-size: .8rem; }
 #tools svg { width: 1.4rem; height: 1.4rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; vertical-align: middle; }
 #scanMsg { bottom: calc(5rem + env(safe-area-inset-bottom)); right: .75rem; }
 

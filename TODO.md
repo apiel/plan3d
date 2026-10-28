@@ -6,7 +6,7 @@
 
 ## 3D and home use
 
-- [ ] 3D view from the plan with three.js (extrude walls, openings), same stack as plinth3d.
+- [x] 3D view from the plan with three.js (extrude walls, openings), same stack as plinth3d. First version: no door leaves, no ceiling, one height for the whole plan, room names not shown. Not tried on the phone yet.
 - [ ] Furniture placement from a small library, with real dimensions.
 
 ## Capture alternatives (only if the phone depth is not good enough)
@@ -31,3 +31,7 @@
 
 - ~~Give a way to name the file for save... give a name to the whole project~~ done: the ⋯ menu shows the plan's name (tap to rename), exports and Drive use it as the file name, and Drive saving goes back into the file the plan was loaded from. Not tried yet on Drive.
 - ~~save the plan as SVG with metadata, so an AI chat can edit it~~ done: "Export plan (SVG)" writes a drawing of the plan with the plan JSON (exactly what "Export plan (JSON)" gives) in `<metadata id="plan3d-data">` and instructions for an AI in a comment at the top (`src/planfile.ts`). "Import plan" takes .svg or .json, ignores the drawing, checks the plan (missing ids, bad numbers) and says what changed; undo goes back. Not tried yet with Claude / ChatGPT / Gemini.
+
+
+
+- we need to be able to see the window and door distance from the wholes.... kind of the same way as wall which are not connected. I am just worried that there is too much number.... maybe we would need a toggle... and also when toggle is off, if we put the more over a wall between 2 window or between a window and wall, ... it would show the value.

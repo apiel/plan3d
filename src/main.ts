@@ -136,6 +136,7 @@ function restore(snapshot: string | undefined): void {
   closeSheet();
   render();
   renderUi();
+  if (!el('view3d').hidden) void import('./view3d/view').then((v) => v.show3d(plan, false));
 }
 
 function resolve(): void {
@@ -1662,6 +1663,27 @@ function importSummary(before: Plan, after: Plan): string {
   count('stair', before.stairs.length, after.stairs.length);
   return `Imported${parts.length ? `: ${parts.join(', ')}` : ', same size as before'}. Undo goes back.`;
 }
+
+// ---------- 3D view ----------
+
+// three.js only loads when the view is first opened
+el('open3d').onclick = async () => (await import('./view3d/view')).show3d(plan);
+el('close3d').onclick = async () => (await import('./view3d/view')).hide3d();
+
+const heightInput = el<HTMLInputElement>('height3d');
+async function setHeight(): Promise<void> {
+  const cm = parseFloat(heightInput.value.replace(',', '.'));
+  if (cm >= 100 && cm <= 1000 && Math.abs(cm / 100 - (plan.height ?? 0)) > 1e-6) {
+    plan.height = Math.round(cm) / 100;
+    commit();
+  }
+  (await import('./view3d/view')).show3d(plan, false);
+}
+el('heightForm').onsubmit = (e) => {
+  e.preventDefault();
+  heightInput.blur();
+};
+heightInput.onchange = () => void setHeight();
 
 // ---------- google drive ----------
 

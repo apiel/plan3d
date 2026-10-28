@@ -25,6 +25,7 @@ If you are an AI assistant asked to change this plan:
 The JSON:
   * Units are metres, angles degrees. x goes right, y goes DOWN.
   * name: the project's name (optional), also used as the file name.
+  * height: floor to ceiling in metres (optional, default 2.5).
   * points: corners {id, x, y, sensor: {x, y}}. sensor is where the camera put the
     corner; for a new corner, make sensor the same as x, y.
   * walls: {a, b, thickness?, color?}: a straight wall between corners a and b. The

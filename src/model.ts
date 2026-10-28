@@ -97,6 +97,8 @@ export interface Stair {
 export interface Plan {
   /** The project's name: file names for exports and Drive. */
   name?: string;
+  /** Floor to ceiling in metres, for the 3D view; from the scan when it saw the ceiling. */
+  height?: number;
   points: PlanPoint[];
   walls: Wall[];
   constraints: Constraint[];
@@ -289,6 +291,7 @@ export function parse(text: string): Plan {
   }
   return {
     ...(typeof raw.name === 'string' && raw.name.trim() ? { name: raw.name.trim() } : {}),
+    ...(typeof raw.height === 'number' && raw.height > 0 ? { height: raw.height } : {}),
     points: raw.points,
     walls: raw.walls,
     constraints: raw.constraints,

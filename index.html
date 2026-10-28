@@ -20,6 +20,7 @@
   <button id="tool-stair" class="round" title="Add stairs" aria-label="Add stairs"><svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20"/><path d="M5 6h14M5 10h14M5 14h14M5 18h14"/></svg></button>
   <button id="undo" class="round" title="Undo" aria-label="Undo" disabled><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
   <button id="redo" class="round" title="Redo" aria-label="Redo" disabled><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  <button id="open3d" class="round" title="3D view" aria-label="3D view">3D</button>
 </div>
 <nav id="menu" hidden>
   <button id="rename" class="name"><span></span><span aria-hidden="true">✎</span></button>
@@ -41,6 +42,15 @@
 <button id="scan" class="primary fab">Scan room</button>
 
 <section id="sheet" hidden></section>
+
+<div id="view3d" hidden>
+  <canvas id="canvas3d"></canvas>
+  <button id="close3d" class="round" title="Back to the plan" aria-label="Back to the plan">✕</button>
+  <form id="heightForm" class="chip">
+    <label>Ceiling <input id="height3d" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off"> cm</label>
+    <span class="muted">Drag to turn, pinch to zoom, two fingers to move</span>
+  </form>
+</div>
 
 <div id="scanOverlay">
   <canvas id="arDraw"></canvas>
