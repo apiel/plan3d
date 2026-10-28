@@ -2,7 +2,7 @@
 // same JSON as `serialize`) in <metadata>, with instructions for an AI asked
 // to edit it. The app only ever reads the JSON back; the picture is a preview.
 
-import { Plan, Vec, Wall, constraintIds, dist, parse, pointById, serialize, wallThickness } from './model';
+import { Plan, Vec, Wall, constraintIds, dist, parse, pointById, serialize, wallThickness, windowFrame } from './model';
 import { groupLoop, insideLoop, insideRoom, loopArea, loopWalls, openingFrame, roomIdsOf, roomName, roomOutline, rooms, spotInside } from './rooms';
 import { stairCorners, stairTreads } from './stairs';
 import { LIBRARY, furnitureItem, symbolSvg } from './furniture';
@@ -46,12 +46,14 @@ The JSON:
     PREFER ADDING CONSTRAINTS TO COMPUTING COORDINATES: put a new corner roughly
     where it goes and add the distances and right angles the user gave; the app
     works out the exact positions.
-  * openings: {id, type, a, b, at, width, measured?, hingeAtB?, outward?, noLeaf?, color?}
+  * openings: {id, type, a, b, at, width, measured?, hingeAtB?, outward?, noLeaf?, frameAt?, niche?, color?}
     in the wall between corners a and b, starting at metres from a, width metres
     wide. type is door, window, or part (a stretch of the wall shown in its color,
     for example to demolish). hingeAtB: the door hangs at the b end. outward: it
     opens out of the room. noLeaf: a doorway with only its frame. measured: the
-    width was measured, keep it.
+    width was measured, keep it. frameAt: metres from the wall's face inside the
+    room to the window frame (centred in the wall when missing). niche: under the
+    window the wall is open down to the floor between the room and the frame.
   * joins: {a, b}: two doors (opening ids), in two rooms, that are the same door.
   * stairs: {id, x, y, width, length, angle, steps}: a straight flight, centred on
     x, y, turned by angle, going up towards its length.
@@ -136,7 +138,13 @@ export function planToSvg(plan: Plan): string {
     out.push(`<path d="${poly([g.p1, g.p2, out2, out1])}" fill="#fff"/>`);
     out.push(`<path d="M${pt(g.p1)}L${pt(out1)}M${pt(g.p2)}L${pt(out2)}" stroke="${color}" stroke-width="1.5"/>`);
     if (o.type === 'window') {
-      out.push(`<path d="M${pt(g.p1)}L${pt(g.p2)}M${pt(out1)}L${pt(out2)}" stroke="${color}" stroke-width="1"/>`);
+      const f = windowFrame(o, t);
+      const at = (k: number) => [g.p1, g.p2].map((p) => ({ x: p.x - g.n.x * k, y: p.y - g.n.y * k }));
+      if (!o.niche && f.from > 0) out.push(`<path d="${poly([g.p1, g.p2, ...at(f.from).reverse()])}" fill="#e5e7eb"/>`);
+      for (const k of [...(o.niche ? [] : [0]), f.from, f.to, t]) out.push(`<path d="M${pt(at(k)[0])}L${pt(at(k)[1])}" stroke="${color}" stroke-width="1"/>`);
+      const glass = at((f.from + f.to) / 2);
+      out.push(`<path d="M${pt(glass[0])}L${pt(glass[1])}" stroke="${color}" stroke-width=".5"/>`);
+      if (o.niche) out.push(`<path d="M${pt(g.p1)}L${pt(g.p2)}" stroke="${color}" stroke-width="1" stroke-dasharray="3 3"/>`);
       continue;
     }
     if (o.noLeaf) continue;

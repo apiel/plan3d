@@ -3,7 +3,7 @@
 // width, y from its back (-0.5, against the wall) to its front (+0.5), both as
 // fractions of the size, so a piece resized in the editor keeps its look.
 
-import { Furniture, Plan, Vec, dist, newId, pointById } from './model';
+import { Furniture, Plan, Vec, Wall, dist, newId, pointById, sameWall, wallThickness, windowFrame } from './model';
 
 export type Shape =
   /** Rectangle between two corners; `r` rounds its corners, in metres. */
@@ -137,12 +137,13 @@ const SNAP = 0.25;
  * Pulls a piece flush against the nearest wall within reach, and into the
  * corner when a second wall across the first is near too. `back`: the piece
  * turns its back to the wall (a WC, a bed); otherwise it keeps whichever side
- * is closest to facing the wall. True when it moved.
+ * is closest to facing the wall. Under a window open down to the floor, a
+ * piece narrow enough goes back into the niche, up to the frame. True when it moved.
  */
 export function snapToWalls(plan: Plan, f: Furniture, back: boolean): boolean {
   let first: Vec | undefined;
   for (let pass = 0; pass < 2; pass++) {
-    let best: { foot: Vec; n: Vec; gap: number; u: Vec } | undefined;
+    let best: { foot: Vec; n: Vec; gap: number; u: Vec; w: Wall; t: number; len: number } | undefined;
     for (const w of plan.walls) {
       const a = pointById(plan, w.a);
       const b = pointById(plan, w.b);
@@ -159,7 +160,7 @@ export function snapToWalls(plan: Plan, f: Furniture, back: boolean): boolean {
       const n = { x: (f.x - foot.x) / dd, y: (f.y - foot.y) / dd }; // from the wall towards the piece
       const half = pass === 0 && back ? f.d / 2 : halfAcross(f, n);
       const gap = dd - half;
-      if (gap < SNAP && (!best || gap < best.gap)) best = { foot, n, gap, u };
+      if (gap < SNAP && (!best || gap < best.gap)) best = { foot, n, gap, u, w, t, len };
     }
     if (!best) break;
     const { foot, n } = best;
@@ -170,11 +171,23 @@ export function snapToWalls(plan: Plan, f: Furniture, back: boolean): boolean {
       f.angle = (((backAngle + turns * 90) % 360) + 360) % 360;
       first = best.u;
     }
-    const half = halfAcross(f, n);
+    const along = halfAcross(f, best.u);
+    const half = halfAcross(f, n) - nicheDepth(plan, best.w, best.len, best.t - along, best.t + along);
     f.x = foot.x + n.x * half;
     f.y = foot.y + n.y * half;
   }
   return first !== undefined;
+}
+
+/** How far back from wall `w`'s face the stretch from `s0` to `s1` (metres from `w.a`) can go: into a niche under a window that spans all of it. */
+function nicheDepth(plan: Plan, w: Wall, len: number, s0: number, s1: number): number {
+  let depth = 0;
+  for (const o of plan.openings) {
+    if (o.type !== 'window' || !o.niche || !sameWall(w, o.a, o.b)) continue;
+    const [o0, o1] = o.a === w.a ? [o.at, o.at + o.width] : [len - o.at - o.width, len - o.at];
+    if (s0 >= o0 - 1e-6 && s1 <= o1 + 1e-6) depth = Math.max(depth, windowFrame(o, wallThickness(plan, w.a, w.b)).from);
+  }
+  return depth;
 }
 
 /** Half the piece's extent along direction `n`. */

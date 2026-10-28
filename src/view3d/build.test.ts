@@ -45,6 +45,20 @@ describe('3D solids', () => {
     expect(Math.max(...pane.pts.map((p) => p.y))).toBeCloseTo(2, 9);
   });
 
+  it('puts the window pane at its frame and leaves a niche under it open', () => {
+    const plan = room();
+    const [p0, p1] = plan.points;
+    plan.walls[0].thickness = 0.4;
+    // wall y = 0, room below it (y > 0): outwards is -y
+    plan.openings.push({ id: newId(), type: 'window', a: p0.id, b: p1.id, at: 1, width: 1, frameAt: 0.2, niche: true });
+    const solids = buildSolids(plan);
+    const pane = solids.find((s) => s.kind === 'glass')!;
+    expect(Math.max(...pane.pts.map((p) => p.y))).toBeCloseTo(-0.23, 9); // frame 20 to 27 cm out, glass in its middle
+    const below = walls(solids).find((w) => w.z0 === 0 && w.pts.every((p) => p.y <= 1e-9) && Math.min(...w.pts.map((p) => p.x)) > 0.99)!;
+    expect(Math.max(...below.pts.map((p) => p.y))).toBeCloseTo(-0.2, 9);
+    expect(Math.min(...below.pts.map((p) => p.y))).toBeCloseTo(-0.4, 9);
+  });
+
   it('climbs stairs one step at a time', () => {
     const plan = room();
     plan.stairs.push({ id: 's', x: 2, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13 });

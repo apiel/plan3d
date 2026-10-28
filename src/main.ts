@@ -30,6 +30,7 @@ import {
   toggleRightAngle,
   wallThickness,
   wallTies,
+  windowFrame,
 } from './model';
 import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile';
 import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
@@ -413,7 +414,29 @@ function drawOpening(o: Opening): void {
   for (const s of [s1, s2]) line(s, out(s, depth));
 
   if (o.type === 'window') {
-    for (const k of [0, depth / 2, depth]) line(out(s1, k), out(s2, k));
+    // the frame where it sits in the wall; between it and the room, the sill when the wall under it is filled
+    const t = wallThickness(plan, o.a, o.b);
+    const f = windowFrame(o, t);
+    const [k1, k2] = [f.from, f.to].map((m) => (t > 0 ? (m / t) * depth : 0));
+    if (!o.niche && k1 > 0) {
+      ctx.fillStyle = '#262b33';
+      ctx.beginPath();
+      for (const [i, v] of [s1, s2, out(s2, k1), out(s1, k1)].entries()) {
+        if (i) ctx.lineTo(v.x, v.y);
+        else ctx.moveTo(v.x, v.y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+    for (const k of [...(o.niche ? [] : [0]), k1, k2, depth]) line(out(s1, k), out(s2, k));
+    ctx.lineWidth = 1;
+    line(out(s1, (k1 + k2) / 2), out(s2, (k1 + k2) / 2)); // the glass
+    if (o.niche) {
+      // open down to the floor: dashed, like what is hidden under the cut
+      ctx.setLineDash([3, 3]);
+      line(s1, s2);
+      ctx.setLineDash([]);
+    }
     return;
   }
   if (o.noLeaf) return; // only the frame
@@ -437,6 +460,18 @@ function drawOpening(o: Opening): void {
   ctx.arc(hinge.x, hinge.y, r, from, to, sweep < 0);
   ctx.stroke();
   ctx.setLineDash([]);
+}
+
+/** On screen, the part of a window's cut between the room and its frame. */
+function nicheOnScreen(o: Opening): Vec[] | undefined {
+  const g = openingGeometry(o);
+  if (!g) return undefined;
+  const t = wallThickness(plan, o.a, o.b);
+  const depth = Math.max(t * view.scale, MIN_OPENING_PX);
+  const k = t > 0 ? (windowFrame(o, t).from / t) * depth : 0;
+  const [s1, s2] = [toScreen(g.p1), toScreen(g.p2)];
+  const out = (p: Vec): Vec => ({ x: p.x - g.n.x * k, y: p.y - g.n.y * k });
+  return [s1, s2, out(s2), out(s1)];
 }
 
 /** The width, in cm, on the room side of the opening: bold green once typed in, "~" while estimated. */
@@ -668,6 +703,16 @@ function render(): void {
 
   for (const st of plan.stairs) drawStair(st);
   for (const o of plan.openings) drawOpening(o);
+  // furniture standing in a niche under a window: again over the cut, as far as the frame
+  const niches = plan.openings.filter((o) => o.type === 'window' && o.niche).map(nicheOnScreen).filter((q): q is Vec[] => !!q);
+  if (showFurniture && niches.length) {
+    ctx.save();
+    ctx.beginPath();
+    for (const q of niches) q.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+    ctx.clip();
+    for (const f of plan.furniture) drawFurniture(f);
+    ctx.restore();
+  }
   for (const o of plan.openings) drawOpeningLabel(o);
 
   // wall lengths, over the openings, and remembered for tapping
@@ -994,7 +1039,7 @@ function numberRow(
   value: number | undefined,
   placeholder: number,
   onSet: (m: number) => void,
-  opts: { id?: string; label?: string; focus?: boolean; unit?: string; factor?: number } = {}
+  opts: { id?: string; label?: string; focus?: boolean; unit?: string; factor?: number; zero?: boolean } = {}
 ): string {
   const id = opts.id ?? 'num';
   const factor = opts.factor ?? 100; // shown value per stored unit: cm per metre by default
@@ -1003,7 +1048,7 @@ function numberRow(
     el(`${id}Form`).onsubmit = (e) => {
       e.preventDefault();
       const shown = parseFloat(input.value.replace(',', '.'));
-      if (shown > 0) onSet(shown / factor);
+      if (shown > 0 || (opts.zero && shown === 0)) onSet(shown / factor);
     };
     el(`${id}Ok`).onmousedown = (e) => e.preventDefault();
     el(`${id}Ok`).onpointerdown = (e) => e.preventDefault();
@@ -1168,6 +1213,15 @@ function renderSheet(): void {
         closeSheet();
         render();
       }) +
+      (o.type === 'window'
+        ? numberRow(o.frameAt, windowFrame(o, wallThickness(plan, o.a, o.b)).from * 100, (m) => {
+            o.frameAt = m;
+            commit();
+            sheet.dataset.key = '';
+            render();
+            renderUi();
+          }, { id: 'frameAt', label: 'Frame from inside', focus: false, zero: true })
+        : '') +
       colorRow(o.type === 'part' ? o.color ?? PART_COLOR : o.color, (c) => {
         o.color = c;
         commit();
@@ -1183,6 +1237,9 @@ function renderSheet(): void {
         ? `<button id="flipHinge" class="icon" title="Hinge on the other side"><svg viewBox="0 0 24 24"><path d="M3 20h18M5 20V8"/><path d="M5 8a12 12 0 0 1 12 12" stroke-dasharray="2 2.2"/><path d="M13 4h8m-2-2 2 2-2 2M21 9h-8m2-2-2 2 2 2"/></svg>Hinge side</button>` +
           `<button id="flipSwing" class="icon" title="Swing ${o.outward ? 'into' : 'out of'} the room"><svg viewBox="0 0 24 24"><path d="M2 12h20M6 12V3M6 12v9"/><path d="M6 3a9 9 0 0 1 9 9" stroke-dasharray="2 2.2"/><path d="M6 21a9 9 0 0 0 9-9" stroke-dasharray="2 2.2"/></svg>Swing ${o.outward ? 'in' : 'out'}</button>`
         : '') +
+      (o.type === 'window'
+        ? `<button id="niche" class="icon ${o.niche ? 'on' : ''}" title="${o.niche ? 'Fill the wall under the window up to the sill' : 'Open under the window down to the floor'}" aria-pressed="${!!o.niche}"><svg viewBox="0 0 24 24"><path d="M4 3v18M20 3v18M4 21h16"/><path d="M8 3v7h8V3M8 10v11M16 10v11" stroke-dasharray="2 2.2"/></svg>Open below</button>`
+        : '') +
       (o.type === 'door'
         ? joinOf(plan, o.id)
           ? `<button id="unjoin" class="icon" title="Unjoin from the other room"><svg viewBox="0 0 24 24"><path d="M9 15 6.5 17.5a3.5 3.5 0 0 1-5-5L4 10M15 9l2.5-2.5a3.5 3.5 0 0 1 5 5L20 14M9 9 7 7M15 15l2 2M12 3v2M3 12h2"/></svg>Unjoin</button>`
@@ -1190,7 +1247,7 @@ function renderSheet(): void {
         : '') +
       `<button id="delO" class="icon danger" title="Delete"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
-    const flip = (key: 'hingeAtB' | 'outward' | 'noLeaf') => {
+    const flip = (key: 'hingeAtB' | 'outward' | 'noLeaf' | 'niche') => {
       o[key] = !o[key] || undefined;
       commit();
       sheet.dataset.key = '';
@@ -1198,6 +1255,7 @@ function renderSheet(): void {
       renderUi();
     };
     if (o.type === 'door') el('noLeaf').onclick = () => flip('noLeaf');
+    if (o.type === 'window') el('niche').onclick = () => flip('niche');
     if (o.type === 'door' && !o.noLeaf) {
       el('flipHinge').onclick = () => flip('hingeAtB');
       el('flipSwing').onclick = () => flip('outward');
@@ -1818,6 +1876,16 @@ window.addEventListener('keyup', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
+  // Ctrl+S: back into the Drive file the plan came from or was last saved to
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    if (driveEnabled && driveFile) void saveDrive();
+    else {
+      showScanMsg(driveEnabled ? 'Not from Google Drive yet: ⋯ > Save to Google Drive once, then Ctrl+S saves there' : 'Use ⋯ > Export plan to save it');
+      setTimeout(() => showScanMsg(null), 3000);
+    }
+    return;
+  }
   if (e.target instanceof HTMLInputElement) {
     if (e.key === 'Escape') closeSheet();
     // the panel's number field has the focus but nothing typed in it yet: arrows still move the selection
@@ -2082,7 +2150,7 @@ function setDriveFile(file: DriveFile | null): void {
   saveDriveFile(file);
 }
 
-el('driveSave').onclick = async () => {
+async function saveDrive(): Promise<void> {
   if (!plan.name && !askName('Saved in Google Drive under its name. ')) return;
   try {
     showScanMsg('Saving to Google Drive…');
@@ -2092,7 +2160,8 @@ el('driveSave').onclick = async () => {
     showScanMsg(`Could not save: ${(err as Error).message}`);
   }
   setTimeout(() => showScanMsg(null), 3000);
-};
+}
+el('driveSave').onclick = () => void saveDrive();
 
 el('driveLoad').onclick = async () => {
   try {
@@ -2123,3 +2192,15 @@ resolve();
 history.reset(JSON.stringify(plan));
 el<HTMLButtonElement>('undo').disabled = true;
 el<HTMLButtonElement>('redo').disabled = true;
+
+// installable app: a service worker so it opens offline (not in dev, where it would serve stale code)
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  navigator.serviceWorker
+    .register('./sw.js')
+    .then(() => navigator.serviceWorker.ready)
+    .then((reg) => {
+      const loaded = performance.getEntriesByType('resource').map((r) => r.name).filter((u) => u.startsWith(location.origin));
+      reg.active?.postMessage({ cache: [location.href.split('#')[0], ...loaded] });
+    })
+    .catch(() => {});
+}

@@ -34,6 +34,24 @@ describe('furniture', () => {
     expect(table).toMatchObject({ x: 1.5, y: 1.5, angle: 0 });
   });
 
+  it('goes back into a niche under a window when it fits', () => {
+    const plan = room();
+    plan.walls[0].thickness = 0.4;
+    const [p0, p1] = plan.points;
+    // wall y = 0 given from p1: the niche runs from x = 1 to 2, 25 cm deep
+    plan.openings.push({ id: 'w', type: 'window', a: p1.id, b: p0.id, at: 1, width: 1, frameAt: 0.25, niche: true });
+    const desk = { ...newFurniture('wc', { x: 1.5, y: 0.2 }), w: 0.8, d: 0.6 };
+    snapToWalls(plan, desk, true);
+    expect(desk.y).toBeCloseTo(0.3 - 0.25);
+    const wide = { ...newFurniture('wc', { x: 1.5, y: 0.2 }), w: 1.2, d: 0.6 };
+    snapToWalls(plan, wide, true);
+    expect(wide.y).toBeCloseTo(0.3); // too wide: stays against the wall
+    plan.openings[0].niche = undefined;
+    const filled = { ...newFurniture('wc', { x: 1.5, y: 0.2 }), w: 0.8, d: 0.6 };
+    snapToWalls(plan, filled, true);
+    expect(filled.y).toBeCloseTo(0.3);
+  });
+
   it('keeps a turned piece turned against the wall', () => {
     const plan = room();
     const bed = { ...newFurniture('bedSingle', { x: 1.05, y: 1.5 }), angle: 90 };

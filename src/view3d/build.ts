@@ -2,7 +2,7 @@
 // (metres, y down like the plan) pulled up between two heights. Walls are cut
 // into pieces around their doors and windows; three.js is kept out of here.
 
-import { Plan, Vec, Wall, pointById, sameWall, wallThickness } from '../model';
+import { Plan, Vec, Wall, pointById, sameWall, wallThickness, windowFrame } from '../model';
 import { groupLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
 import { stairPoint } from '../stairs';
 import { furnitureOutline } from '../furniture';
@@ -93,12 +93,17 @@ export function buildSolids(plan: Plan): Solid[] {
       else if (o.type === 'door') piece(s0, s1, Math.min(DOOR_TOP, height), height, 'wall', wall.color);
       else {
         const top = Math.min(WINDOW_TOP, height);
-        piece(s0, s1, 0, Math.min(SILL, top), 'wall', wall.color);
+        const f = windowFrame(o, t);
+        const sill = Math.min(SILL, top);
+        // under the window: the whole thickness, or in a niche only from the frame outwards
+        if (o.niche) {
+          if (s1 - s0 > 1e-6 && sill > 1e-6) solids.push({ kind: 'wall', pts: [add(inner(s0), n, f.from), add(inner(s1), n, f.from), outer(s1), outer(s0)], z0: 0, z1: sill, color: wall.color });
+        } else piece(s0, s1, 0, sill, 'wall', wall.color);
         piece(s0, s1, top, height, 'wall', wall.color);
-        // the pane, in the middle of the wall's thickness
-        const m0 = add(inner(s0), n, t / 2 - 0.005);
-        const m1 = add(inner(s1), n, t / 2 - 0.005);
-        solids.push({ kind: 'glass', pts: [m0, m1, add(m1, n, 0.01), add(m0, n, 0.01)], z0: SILL, z1: top });
+        // the pane, in the middle of the frame
+        const m0 = add(inner(s0), n, (f.from + f.to) / 2 - 0.005);
+        const m1 = add(inner(s1), n, (f.from + f.to) / 2 - 0.005);
+        solids.push({ kind: 'glass', pts: [m0, m1, add(m1, n, 0.01), add(m0, n, 0.01)], z0: sill, z1: top });
       }
     }
   }

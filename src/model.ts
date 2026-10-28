@@ -78,6 +78,20 @@ export interface Opening {
   outward?: boolean;
   /** A doorway with only its frame: no door hangs in it. */
   noLeaf?: boolean;
+  /** Window: metres from the wall's face inside the room to the frame. Centred in the wall when unset. */
+  frameAt?: number;
+  /** Window: under it the wall is open down to the floor between the room and the frame (a niche), instead of filled up to the sill. */
+  niche?: boolean;
+}
+
+/** How thick a window frame is, in metres. */
+export const WINDOW_FRAME = 0.07;
+
+/** Where a window's frame sits in a wall `t` thick: metres from the face inside the room to its two sides. */
+export function windowFrame(o: Opening, t: number): { from: number; to: number } {
+  const frame = Math.min(WINDOW_FRAME, t);
+  const from = Math.max(0, Math.min(t - frame, o.frameAt ?? (t - frame) / 2));
+  return { from, to: from + frame };
 }
 
 /** Two doors, in different rooms, that are the same door: the rooms are placed so the doors coincide. */
