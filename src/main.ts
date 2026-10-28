@@ -1061,6 +1061,7 @@ function renderSheet(): void {
     const groups = [...new Set(LIBRARY.map((i) => i.group))];
     sheet.innerHTML =
       head('Furniture', 'pick one, then tap the plan') +
+      `<button id="libShow" class="check" role="switch" aria-checked="${showFurniture}"><span>Show furniture on the plan</span><span class="switch" aria-hidden="true"></span></button>` +
       `<div class="lib">` +
       groups
         .map(
@@ -1073,6 +1074,10 @@ function renderSheet(): void {
         )
         .join('') +
       `</div>`;
+    el('libShow').onclick = () => {
+      setShowFurniture(!showFurniture);
+      render();
+    };
     for (const b of sheet.querySelectorAll<HTMLButtonElement>('[data-kind]')) {
       b.onclick = () => {
         furnitureKind = b.dataset.kind!;
@@ -1899,8 +1904,9 @@ el('redo').onclick = () => restore(history.redo());
 el('menuBtn').onclick = () => {
   el('menu').hidden = !el('menu').hidden;
 };
-// every menu entry closes the menu
-el('menu').addEventListener('click', () => {
+// every menu entry closes the menu, except the switches: they stay open to show they flipped
+el('menu').addEventListener('click', (e) => {
+  if ((e.target as Element).closest('[role="switch"]')) return;
   el('menu').hidden = true;
 });
 
@@ -1920,7 +1926,7 @@ function askName(why = ''): boolean {
 el('rename').onclick = () => askName();
 
 function renderGapsToggle(): void {
-  el('gaps').lastElementChild!.textContent = showGaps ? '✓' : '';
+  el('gaps').setAttribute('aria-checked', String(showGaps));
 }
 el('gaps').onclick = () => {
   showGaps = !showGaps;
@@ -1942,7 +1948,7 @@ function setShowFurniture(on: boolean): void {
   } catch {
     // storage blocked: the choice lasts until the page is reloaded
   }
-  el('furnitureToggle').lastElementChild!.textContent = on ? '✓' : '';
+  for (const id of ['furnitureToggle', 'libShow']) document.getElementById(id)?.setAttribute('aria-checked', String(on));
   if (!on && selection?.kind === 'furniture') selection = null;
   if (!el('view3d').hidden) void import('./view3d/view').then((v) => v.show3d(plan3d(), false));
 }
