@@ -2,12 +2,12 @@
 //   npx vite-node scripts/demo-plan.ts /tmp/demo.json
 //   npm run build && npx vite preview --port 4180 &
 //   npm i --no-save puppeteer-core && node scripts/screenshots.mjs /tmp/demo.json http://localhost:4180/
-// Writes docs/screenshots/*.png. Set CHROME to the browser's path if it is not /usr/bin/google-chrome.
+// Writes docs/screenshots/*.png (or into a folder given as a third argument). Set CHROME to the browser's path if it is not /usr/bin/google-chrome.
 import puppeteer from 'puppeteer-core';
 import { readFileSync } from 'node:fs';
 
-const [planFile, url] = process.argv.slice(2);
-const out = new URL('../docs/screenshots/', import.meta.url).pathname;
+const [planFile, url, outDir] = process.argv.slice(2);
+const out = outDir ? `${outDir.replace(/\/$/, '')}/` : new URL('../docs/screenshots/', import.meta.url).pathname;
 const plan = readFileSync(planFile, 'utf8');
 const browser = await puppeteer.launch({ executablePath: process.env.CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const page = await browser.newPage();

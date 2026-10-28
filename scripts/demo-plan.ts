@@ -59,7 +59,7 @@ put('wardrobe', 7.7, 2.6, 270);
 // bathroom
 put('bath', 6.9, 5.8, 180);
 put('wc', 7.8, 4.0, 270);
-put('basin', 5.0, 4.3, 90);
+put('basin', 6.0, 3.6);
 put('washer', 5.0, 5.2, 90);
 
 plan.names.push({ name: 'Living room', x: 3.4, y: 1.4 }, { name: 'Bedroom', x: 6.0, y: 2.7 }, { name: 'Bathroom', x: 6.3, y: 4.7 });
