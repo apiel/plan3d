@@ -4,6 +4,7 @@ import {
   Opening,
   Plan,
   Stair,
+  Turn,
   Vec,
   Wall,
   addPoint,
@@ -38,7 +39,7 @@ import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
 import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
-import { insideStair, newStair, stairAxes, stairCorners, stairPoint, stairTreads } from './stairs';
+import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
 import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
 import { load, loadDriveFile, save, saveDriveFile } from './storage';
 
@@ -61,6 +62,8 @@ type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | 'furniture' | null;
 type Drag =
   | { kind: 'point'; id: string; moved: boolean }
   | { kind: 'stair'; id: string; from: Vec; start: Vec; moved: boolean }
+  /** A handle of the selected stairs: `start` is how they were when it was picked up. */
+  | { kind: 'stairSize'; id: string; handle: StairHandle; from: Vec; start: Stair; moved: boolean }
   /** `start`: where it stood (centre and angle), so snapping to walls does not build up while dragging. */
   | { kind: 'furniture'; id: string; from: Vec; start: { x: number; y: number; angle: number }; down: Vec; moved: boolean }
   /** `grab`: metres from the start of the opening to where it was picked up; `down`: there on screen. */
@@ -185,6 +188,24 @@ function resolve(): void {
 }
 
 // ---------- hit testing ----------
+
+/** A handle of the selected stairs under the pointer. */
+function hitStairHandle(pos: Vec, tol: number): { st: Stair; handle: StairHandle } | undefined {
+  const sel = selection;
+  const st = sel?.kind === 'stair' ? plan.stairs.find((x) => x.id === sel.id) : undefined;
+  if (!st) return undefined;
+  let best: StairHandle | undefined;
+  let bestD = POINT_HIT * tol;
+  for (const [handle, h] of Object.entries(stairHandles(st)) as [StairHandle, Vec][]) {
+    const s = toScreen(h);
+    const d = Math.hypot(s.x - pos.x, s.y - pos.y);
+    if (d <= bestD) {
+      best = handle;
+      bestD = d;
+    }
+  }
+  return best && { st, handle: best };
+}
 
 function hitPoint(sx: number, sy: number, tol: number): string | undefined {
   let best: string | undefined;
@@ -503,15 +524,22 @@ function drawStair(st: Stair): void {
   ctx.lineWidth = 1;
   for (const [a, b] of stairTreads(st)) line(toScreen(a), toScreen(b));
   // walking line up the middle
-  const bottom = toScreen(stairPoint(st, -st.length / 2 + 0.15, 0));
-  const top = toScreen(stairPoint(st, st.length / 2 - 0.05, 0));
+  const walk = stairWalk(st).map(toScreen);
+  const bottom = walk[0];
+  const top = walk[walk.length - 1];
   ctx.lineWidth = selected ? 2 : 1.5;
-  line(bottom, top);
+  ctx.beginPath();
+  walk.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+  ctx.stroke();
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(bottom.x, bottom.y, 3.5, 0, Math.PI * 2);
   ctx.fill();
-  const { u, v } = stairAxes(st);
+  // the arrow points along the last stretch of the walking line, on screen
+  const before = walk[walk.length - 2];
+  const len = Math.hypot(top.x - before.x, top.y - before.y) || 1;
+  const u = { x: (top.x - before.x) / len, y: (top.y - before.y) / len };
+  const v = { x: -u.y, y: u.x };
   const head = 9;
   ctx.beginPath();
   ctx.moveTo(top.x, top.y);
@@ -520,6 +548,15 @@ function drawStair(st: Stair): void {
   ctx.closePath();
   ctx.fill();
   if (selected) {
+    ctx.fillStyle = '#1d2129';
+    ctx.lineWidth = 2;
+    for (const h of Object.values(stairHandles(st))) {
+      const c = toScreen(h);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     label(`${(st.width * 100).toFixed(0)} cm`, toScreen(stairPoint(st, -st.length / 2 - 0.25, 0)), color, false);
     label(`${(st.length * 100).toFixed(0)} cm`, toScreen(stairPoint(st, 0, st.width / 2 + 0.25)), color, false);
   }
@@ -1029,6 +1066,27 @@ function colorRow(current: string | undefined, onSet: (c: string | undefined) =>
 const head = (title: string, detail = '') =>
   `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
 
+/** Three buttons for how the stairs end at the bottom or the top: turning left, straight, turning right (going up). */
+function turnRow(end: 'bottom' | 'top', current: Turn | undefined): string {
+  const icons: Record<string, string> = {
+    left: '<path d="M12 21V9H4M8 5L4 9l4 4"/>',
+    '': '<path d="M12 21V3M8 7l4-4 4 4"/>',
+    right: '<path d="M12 21V9h8M16 5l4 4-4 4"/>',
+  };
+  const names: Record<string, string> = { left: 'Left', '': 'Straight', right: 'Right' };
+  return (
+    `<div class="row"><span class="muted">${end === 'bottom' ? 'Bottom' : 'Top'}</span>` +
+    ['left', '', 'right']
+      .map((turn) => {
+        const on = (current ?? '') === turn;
+        const title = turn ? `Turn 90° to the ${turn} at the ${end}, going up` : `Straight at the ${end}`;
+        return `<button class="icon ${on ? 'on' : ''}" data-end="${end}" data-turn="${turn}" title="${title}" aria-pressed="${on}"><svg viewBox="0 0 24 24">${icons[turn]}</svg>${names[turn]}</button>`;
+      })
+      .join('') +
+    '</div>'
+  );
+}
+
 /**
  * A number field in cm with an OK button; `onSet` gets metres. It is a form,
  * so the keyboard's Done/Enter submits it. Tapping OK must not take the focus
@@ -1293,17 +1351,27 @@ function renderSheet(): void {
       renderUi();
     };
     sheet.innerHTML =
-      head('Stairs', `${st.steps} steps of ${((st.length / st.steps) * 100).toFixed(0)} cm · drag to move`) +
+      head('Stairs', `${st.steps} steps, straight ones ${((st.length / straightSteps(st)) * 100).toFixed(0)} cm · drag to move`) +
       numberRow(st.width, st.width * 100, (m) => update(() => (st.width = m)), { id: 'stW', label: 'Width', focus: false }) +
-      numberRow(st.length, st.length * 100, (m) => update(() => (st.length = m)), { id: 'stL', label: 'Length', focus: false }) +
+      numberRow(st.length, st.length * 100, (m) => update(() => (st.length = m)), { id: 'stL', label: st.bottom || st.top ? 'Straight part' : 'Length', focus: false }) +
       numberRow(st.steps, st.steps, (n) => update(() => (st.steps = Math.max(1, Math.round(n)))), { id: 'stN', label: 'Steps', focus: false, unit: '', factor: 1 }) +
+      turnRow('bottom', st.bottom) +
+      turnRow('top', st.top) +
       `<div class="row">` +
       `<button id="stRot" class="icon" title="Turn a quarter turn"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Turn 90°</button>` +
       `<button id="stFlip" class="icon" title="Go up the other way"><svg viewBox="0 0 24 24"><path d="M8 20V4M4 8l4-4 4 4M16 4v16M12 16l4 4 4-4"/></svg>Up/down</button>` +
       `<button id="stDel" class="icon danger" title="Delete these stairs"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
     el('stRot').onclick = () => update(() => (st.angle = (st.angle + 90) % 360));
-    el('stFlip').onclick = () => update(() => (st.angle = (st.angle + 180) % 360));
+    el('stFlip').onclick = () => update(() => flipStair(st));
+    for (const b of sheet.querySelectorAll<HTMLButtonElement>('button[data-end]'))
+      b.onclick = () =>
+        update(() => {
+          const end = b.dataset.end as 'bottom' | 'top';
+          const turn = b.dataset.turn as Turn | '';
+          if (turn) st[end] = turn;
+          else delete st[end];
+        });
     el('stDel').onclick = () => {
       if (!confirm('Delete these stairs?')) return;
       plan.stairs = plan.stairs.filter((x) => x.id !== st.id);
@@ -1596,6 +1664,12 @@ canvas.addEventListener('pointerdown', (e) => {
   if (tool === 'furniture') return furnitureTap(pos);
   if (tool) return openingTap(pos, tol);
 
+  const sized = hitStairHandle(pos, tol);
+  if (sized) {
+    drag = { kind: 'stairSize', id: sized.st.id, handle: sized.handle, from: cursor, start: { ...sized.st }, moved: false };
+    return;
+  }
+
   const pid = hitPoint(pos.x, pos.y, tol);
   const oid = pid ? undefined : hitOpening(pos.x, pos.y, tol);
   // before walls: a piece stands against a wall, and a tap on its back half is meant for it
@@ -1649,6 +1723,14 @@ canvas.addEventListener('pointermove', (e) => {
       p.y = to.y;
       p.sensor = { x: to.x, y: to.y };
       drag.moved = true;
+    }
+    render();
+  } else if (drag?.kind === 'stairSize') {
+    const d = drag;
+    const st = plan.stairs.find((x) => x.id === d.id);
+    if (st) {
+      Object.assign(st, resizeStair(d.start, d.handle, { x: cursor.x - d.from.x, y: cursor.y - d.from.y }));
+      d.moved = true;
     }
     render();
   } else if (drag?.kind === 'stair') {
@@ -1722,7 +1804,12 @@ const pointerEnd = (e: PointerEvent) => {
     return;
   }
   const moved = drag?.kind === 'point' && drag.moved;
-  if ((drag?.kind === 'stair' || drag?.kind === 'furniture') && drag.moved) commit();
+  if ((drag?.kind === 'stair' || drag?.kind === 'stairSize' || drag?.kind === 'furniture') && drag.moved) commit();
+  if (drag?.kind === 'stairSize' && drag.moved) {
+    // the panel shows the new size
+    sheet.dataset.key = '';
+    renderUi();
+  }
   if (drag?.kind === 'room') {
     const moved = drag.moved;
     drag = null;

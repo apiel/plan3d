@@ -55,8 +55,12 @@ The JSON:
     room to the window frame (centred in the wall when missing). niche: under the
     window the wall is open down to the floor between the room and the frame.
   * joins: {a, b}: two doors (opening ids), in two rooms, that are the same door.
-  * stairs: {id, x, y, width, length, angle, steps}: a straight flight, centred on
-    x, y, turned by angle, going up towards its length.
+  * stairs: {id, x, y, width, length, angle, steps, bottom, top}: a flight whose
+    straight part is centred on x, y, turned by angle, going up towards its
+    length. bottom and top, "left" or "right" (or missing for straight): the
+    stairs turn a quarter turn that way at that end, going up, with 3 winder
+    steps in a square as wide as the flight beyond the straight part. steps
+    counts them all.
   * names: {name, x, y}: a room's name, at a spot inside that room.
   * color: "#rrggbb". What a colour means is up to the user (for example red for
     walls to remove, orange for walls to build).
@@ -280,7 +284,10 @@ export function planProblems(plan: Plan): string[] {
     if (!num(o.at) || !num(o.width) || o.width <= 0) out.push(`${o.type} "${o.id}" has a bad position or width`);
   }
   for (const j of plan.joins) if (!openings.has(j.a) || !openings.has(j.b)) out.push(`a join refers to a door that does not exist`);
-  for (const s of plan.stairs) if (![s.x, s.y, s.width, s.length, s.angle, s.steps].every(num)) out.push(`stairs "${s.id}" have a bad number`);
+  for (const s of plan.stairs) {
+    if (![s.x, s.y, s.width, s.length, s.angle, s.steps].every(num)) out.push(`stairs "${s.id}" have a bad number`);
+    for (const end of ['bottom', 'top'] as const) if (s[end] !== undefined && s[end] !== 'left' && s[end] !== 'right') out.push(`stairs "${s.id}" have ${end} "${s[end]}", not left or right`);
+  }
   for (const n of plan.names) if (typeof n.name !== 'string' || !num(n.x) || !num(n.y)) out.push(`a room name is not {name, x, y}`);
   return out;
 }

@@ -100,7 +100,15 @@ export interface Join {
   b: string;
 }
 
-/** A straight flight of stairs: centre and size in metres, turned by `angle` degrees; it goes up towards +length. */
+/** Which way the walker turns, going up. */
+export type Turn = 'left' | 'right';
+
+/**
+ * A flight of stairs: centre and size of its straight part in metres, turned
+ * by `angle` degrees; it goes up towards +length. At the bottom and the top it
+ * can turn a quarter turn (winders in a square as wide as the flight, beyond
+ * that end); missing means it ends straight.
+ */
 export interface Stair {
   id: string;
   x: number;
@@ -109,6 +117,8 @@ export interface Stair {
   length: number;
   angle: number;
   steps: number;
+  bottom?: Turn;
+  top?: Turn;
 }
 
 export interface Plan {

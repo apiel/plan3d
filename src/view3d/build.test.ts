@@ -66,4 +66,13 @@ describe('3D solids', () => {
     expect(steps).toHaveLength(13);
     expect(steps[12].z1).toBeCloseTo(13 * 0.175, 9);
   });
+
+  it('climbs the winders of a turn last', () => {
+    const plan = room();
+    plan.stairs.push({ id: 's', x: 2, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13, top: 'left' });
+    const steps = buildSolids(plan).filter((s) => s.kind === 'stair');
+    expect(steps).toHaveLength(13);
+    expect(steps[12].pts).toHaveLength(3); // a winder: a triangle at the inner corner
+    expect(Math.max(...steps[12].pts.map((p) => p.x))).toBeGreaterThan(2 + 1.3);
+  });
 });

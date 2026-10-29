@@ -4,7 +4,7 @@
 
 import { Plan, Vec, Wall, pointById, sameWall, wallThickness, windowFrame } from '../model';
 import { groupLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
-import { stairPoint } from '../stairs';
+import { stairSteps } from '../stairs';
 import { furnitureOutline } from '../furniture';
 
 export type Kind = 'wall' | 'glass' | 'floor' | 'stair' | 'furniture';
@@ -113,15 +113,7 @@ export function buildSolids(plan: Plan): Solid[] {
     solids.push({ kind: 'floor', pts, z0: -FLOOR, z1: 0 });
   }
 
-  for (const s of plan.stairs) {
-    const steps = Math.max(1, Math.round(s.steps));
-    for (let i = 0; i < steps; i++) {
-      const from = -s.length / 2 + (i * s.length) / steps;
-      const to = -s.length / 2 + ((i + 1) * s.length) / steps;
-      const pts = [stairPoint(s, from, -s.width / 2), stairPoint(s, to, -s.width / 2), stairPoint(s, to, s.width / 2), stairPoint(s, from, s.width / 2)];
-      solids.push({ kind: 'stair', pts, z0: 0, z1: (i + 1) * STEP_RISE });
-    }
-  }
+  for (const s of plan.stairs) stairSteps(s).forEach((pts, i) => solids.push({ kind: 'stair', pts, z0: 0, z1: (i + 1) * STEP_RISE }));
 
   for (const f of plan.furniture) solids.push({ kind: 'furniture', pts: furnitureOutline(f), z0: 0, z1: f.h });
   return solids;
