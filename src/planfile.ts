@@ -60,7 +60,9 @@ The JSON:
     length. bottom and top, "left" or "right" (or missing for straight): the
     stairs turn a quarter turn that way at that end, going up, with 3 winder
     steps in a square as wide as the flight beyond the straight part. steps
-    counts them all.
+    counts them all. down: true when the stairs go down to the floor under this
+    one, with their top at this floor (the 3D view cuts a hole in the floor for
+    them); missing: they go up to the floor above.
   * names: {name, x, y}: a room's name, at a spot inside that room.
   * color: "#rrggbb". What a colour means is up to the user (for example red for
     walls to remove, orange for walls to build).

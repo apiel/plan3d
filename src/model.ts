@@ -119,6 +119,8 @@ export interface Stair {
   steps: number;
   bottom?: Turn;
   top?: Turn;
+  /** The flight goes down to the floor under this one, its top at this floor's level; missing: up to the floor above, its bottom here. */
+  down?: boolean;
 }
 
 export interface Plan {

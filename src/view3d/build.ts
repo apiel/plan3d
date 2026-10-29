@@ -3,8 +3,8 @@
 // into pieces around their doors and windows; three.js is kept out of here.
 
 import { Plan, Vec, Wall, pointById, sameWall, wallThickness, windowFrame } from '../model';
-import { groupLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
-import { stairSteps } from '../stairs';
+import { groupLoop, insideLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
+import { stairCorners, stairSteps } from '../stairs';
 import { furnitureOutline } from '../furniture';
 
 export type Kind = 'wall' | 'glass' | 'floor' | 'stair' | 'furniture';
@@ -17,6 +17,8 @@ export interface Solid {
   z1: number;
   /** A colour the user picked, '#rrggbb'. */
   color?: string;
+  /** Openings in the outline (a stairwell in a floor). */
+  holes?: Vec[][];
 }
 
 /** Floor to ceiling, when the plan does not say. */
@@ -108,12 +110,20 @@ export function buildSolids(plan: Plan): Solid[] {
     }
   }
 
+  // the floor is open where stairs go down through it (a hair smaller than the flight, so it never touches a wall)
+  const wells = plan.stairs.filter((s) => s.down).map((s) => stairCorners({ ...s, width: s.width - 0.02, length: s.length - 0.02 }));
   for (const loop of rooms(plan)) {
     const pts = loop.map((id) => pointById(plan, id)!);
-    solids.push({ kind: 'floor', pts, z0: -FLOOR, z1: 0 });
+    const holes = wells.filter((w) => w.every((p) => insideLoop(plan, loop, p)));
+    solids.push({ kind: 'floor', pts, z0: -FLOOR, z1: 0, ...(holes.length ? { holes } : {}) });
   }
 
-  for (const s of plan.stairs) stairSteps(s).forEach((pts, i) => solids.push({ kind: 'stair', pts, z0: 0, z1: (i + 1) * STEP_RISE }));
+  // stairs up rise from this floor; stairs down reach this floor with their last step and drop to the floor under
+  for (const s of plan.stairs) {
+    const steps = stairSteps(s);
+    const drop = s.down ? steps.length * STEP_RISE : 0;
+    steps.forEach((pts, i) => solids.push({ kind: 'stair', pts, z0: -drop, z1: (i + 1) * STEP_RISE - drop }));
+  }
 
   for (const f of plan.furniture) solids.push({ kind: 'furniture', pts: furnitureOutline(f), z0: 0, z1: f.h });
   return solids;

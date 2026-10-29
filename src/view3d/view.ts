@@ -27,6 +27,7 @@ let running = false;
 /** A solid as a mesh: its outline extruded upwards. Plan x, y become x, z; height is y. */
 function mesh(s: Solid): THREE.Object3D {
   const shape = new THREE.Shape(s.pts.map((p) => new THREE.Vector2(p.x, -p.y)));
+  for (const hole of s.holes ?? []) shape.holes.push(new THREE.Path(hole.map((p) => new THREE.Vector2(p.x, -p.y))));
   const geo = new THREE.ExtrudeGeometry(shape, { depth: s.z1 - s.z0, bevelEnabled: false });
   geo.rotateX(-Math.PI / 2);
   geo.translate(0, s.z0, 0);

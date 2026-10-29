@@ -1381,15 +1381,26 @@ function renderSheet(): void {
       numberRow(st.width, st.width * 100, (m) => update(() => (st.width = m)), { id: 'stW', label: 'Width', focus: false }) +
       numberRow(st.length, st.length * 100, (m) => update(() => (st.length = m)), { id: 'stL', label: st.bottom || st.top ? 'Straight part' : 'Length', focus: false }) +
       numberRow(st.steps, st.steps, (n) => update(() => (st.steps = Math.max(1, Math.round(n)))), { id: 'stN', label: 'Steps', focus: false, unit: '', factor: 1 }) +
+      `<div class="row"><span class="muted">Goes</span>` +
+      [false, true]
+        .map((down) => `<button class="icon ${!!st.down === down ? 'on' : ''}" data-down="${down}" title="${down ? 'Down to the floor under this one (a hole in this floor in the 3D view)' : 'Up to the floor above this one'}" aria-pressed="${!!st.down === down}"><svg viewBox="0 0 24 24">${down ? '<path d="M12 3v18M8 17l4 4 4-4"/>' : '<path d="M12 21V3M8 7l4-4 4 4"/>'}</svg>${down ? 'Down' : 'Up'}</button>`)
+        .join('') +
+      `</div>` +
       turnRow('bottom', st.bottom) +
       turnRow('top', st.top) +
       `<div class="row">` +
       `<button id="stRot" class="icon" title="Turn a quarter turn"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Turn 90°</button>` +
-      `<button id="stFlip" class="icon" title="Go up the other way"><svg viewBox="0 0 24 24"><path d="M8 20V4M4 8l4-4 4 4M16 4v16M12 16l4 4 4-4"/></svg>Up/down</button>` +
+      `<button id="stFlip" class="icon" title="Turn the flight round: its top end becomes its bottom end"><svg viewBox="0 0 24 24"><path d="M8 20V4M4 8l4-4 4 4M16 4v16M12 16l4 4 4-4"/></svg>Flip</button>` +
       `<button id="stDel" class="icon danger" title="Delete these stairs"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
       `</div>`;
     el('stRot').onclick = () => update(() => (st.angle = (st.angle + 90) % 360));
     el('stFlip').onclick = () => update(() => flipStair(st));
+    for (const b of sheet.querySelectorAll<HTMLButtonElement>('button[data-down]'))
+      b.onclick = () =>
+        update(() => {
+          if (b.dataset.down === 'true') st.down = true;
+          else delete st.down;
+        });
     for (const b of sheet.querySelectorAll<HTMLButtonElement>('button[data-end]'))
       b.onclick = () =>
         update(() => {

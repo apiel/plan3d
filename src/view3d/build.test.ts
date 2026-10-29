@@ -67,6 +67,29 @@ describe('3D solids', () => {
     expect(steps[12].z1).toBeCloseTo(13 * 0.175, 9);
   });
 
+  it('drops stairs that go down below the floor and opens the floor above them', () => {
+    const plan = room();
+    plan.stairs.push({ id: 's', x: 2, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13, down: true });
+    const solids = buildSolids(plan);
+    const steps = solids.filter((s) => s.kind === 'stair');
+    expect(steps).toHaveLength(13);
+    // the last step is level with this floor, the first one a rise above the floor under
+    expect(steps[12].z1).toBeCloseTo(0, 9);
+    expect(steps[0].z1).toBeCloseTo(-12 * 0.175, 9);
+    expect(steps.every((s) => s.z0 === -13 * 0.175)).toBe(true);
+    const floor = solids.find((s) => s.kind === 'floor')!;
+    expect(floor.holes).toHaveLength(1);
+    // stairs going up leave the floor whole
+    plan.stairs[0].down = false;
+    expect(buildSolids(plan).find((s) => s.kind === 'floor')!.holes).toBeUndefined();
+  });
+
+  it('keeps the floor whole when stairs going down are not inside one room', () => {
+    const plan = room();
+    plan.stairs.push({ id: 's', x: 6, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13, down: true });
+    expect(buildSolids(plan).find((s) => s.kind === 'floor')!.holes).toBeUndefined();
+  });
+
   it('climbs the winders of a turn last', () => {
     const plan = room();
     plan.stairs.push({ id: 's', x: 2, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13, top: 'left' });
