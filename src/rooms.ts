@@ -348,18 +348,20 @@ export function moveRoom(plan: Plan, id: string, d: Vec): void {
 }
 
 /**
- * Copies a room with its walls, measurements, angles, doors, windows and
- * name, beside the original (to the right, with a gap). Joins to other rooms
- * are not copied. Returns the copy's loop of corners.
+ * Copies rooms with their walls, measurements, angles, doors, windows and
+ * names, beside the originals (to the right, with a gap). Rooms keep their
+ * places relative to each other, and a wall they share is copied once. Joins
+ * to other rooms are not copied. Returns each copy's loop of corners, in the
+ * order of `loops`.
  */
-export function duplicateRoom(plan: Plan, loop: string[]): string[] {
-  const ids = new Set(loop);
+export function duplicateRooms(plan: Plan, loops: string[][]): string[][] {
+  const ids = new Set(loops.flat());
   const pts = plan.points.filter((p) => ids.has(p.id));
   const shift = Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)) + 0.5;
   const map = new Map(pts.map((p) => [p.id, newId()]));
   const to = (x: string) => map.get(x)!;
-  const walls = loopWalls(plan, loop);
-  for (const n of plan.names.filter((n) => insideLoop(plan, loop, n))) plan.names.push({ ...n, x: n.x + shift });
+  const walls = [...new Set(loops.flatMap((loop) => loopWalls(plan, loop)))];
+  for (const n of plan.names.filter((n) => loops.some((loop) => insideLoop(plan, loop, n)))) plan.names.push({ ...n, x: n.x + shift });
   for (const p of pts) plan.points.push({ ...p, id: to(p.id), x: p.x + shift, sensor: { x: p.sensor.x + shift, y: p.sensor.y } });
   for (const w of walls) plan.walls.push({ ...w, a: to(w.a), b: to(w.b) });
   for (const c of plan.constraints.filter((c) => constraintIds(c).every((x) => ids.has(x)))) {
@@ -368,8 +370,11 @@ export function duplicateRoom(plan: Plan, loop: string[]): string[] {
     plan.constraints.push(copy);
   }
   for (const o of plan.openings.filter((o) => walls.some((w) => sameWall(w, o.a, o.b)))) plan.openings.push({ ...o, id: newId(), a: to(o.a), b: to(o.b) });
-  return loop.map(to);
+  return loops.map((loop) => loop.map(to));
 }
+
+/** Copies one room: see `duplicateRooms`. */
+export const duplicateRoom = (plan: Plan, loop: string[]): string[] => duplicateRooms(plan, [loop])[0];
 
 /**
  * Removes a room: its walls with their doors, windows and measurements, but
@@ -384,6 +389,88 @@ export function deleteRoom(plan: Plan, loop: string[]): void {
   plan.constraints = plan.constraints.filter((c) => !(c.type === 'distance' && gone.some((w) => sameWall(w, c.a, c.b))));
   for (const id of loop) if (!plan.walls.some((w) => w.a === id || w.b === id)) removePoint(plan, id);
   pruneJoins(plan);
+}
+
+/**
+ * Removes one wall with its doors, windows and parts, and what was held on it:
+ * its measured length, ties to other walls, and angles at either end that
+ * used it. A corner left with no wall goes too; the rest of the rooms stay.
+ */
+export function removeWall(plan: Plan, a: string, b: string): void {
+  const pair = (x: string, y: string) => (x === a && y === b) || (x === b && y === a);
+  plan.walls = plan.walls.filter((w) => !sameWall(w, a, b));
+  plan.openings = plan.openings.filter((o) => !sameWall(o, a, b));
+  plan.constraints = plan.constraints.filter((c) => {
+    if (c.type === 'distance') return !pair(c.a, c.b);
+    if (c.type === 'rightAngle' || c.type === 'angle') return !pair(c.a, c.b) && !pair(c.b, c.c);
+    // ties to another wall, from either side
+    return !(pair(c.a, c.b) || pair(c.c, c.d));
+  });
+  for (const id of [a, b]) if (!plan.walls.some((w) => w.a === id || w.b === id)) removePoint(plan, id);
+  pruneJoins(plan);
+}
+
+/**
+ * Removes a corner that has two walls and joins its two neighbours with one
+ * wall, so the wall stays. The new wall keeps the colour and thickness of the
+ * first one; doors, windows and parts move onto it where they were. What was
+ * held on the corner goes, as do the lengths of the two halves; walls tied
+ * parallel to a half are tied to the new wall. Returns false when the corner
+ * has not exactly two walls (nothing is changed then).
+ */
+export function mergeCorner(plan: Plan, id: string): boolean {
+  const walls = plan.walls.filter((w) => w.a === id || w.b === id);
+  const p = pointById(plan, id);
+  if (!p || walls.length !== 2) return false;
+  const [w1, w2] = walls;
+  const n1 = w1.a === id ? w1.b : w1.a;
+  const n2 = w2.a === id ? w2.b : w2.a;
+  const q1 = pointById(plan, n1);
+  const q2 = pointById(plan, n2);
+  if (!q1 || !q2 || n1 === n2) return false;
+  const len1 = Math.hypot(q1.x - p.x, q1.y - p.y);
+  const len2 = Math.hypot(q2.x - p.x, q2.y - p.y);
+  const len = Math.hypot(q2.x - q1.x, q2.y - q1.y);
+  const exists = plan.walls.some((w) => sameWall(w, n1, n2));
+
+  // the openings first: they refer to the two old walls
+  for (const o of plan.openings) {
+    const half1 = sameWall(o, n1, id);
+    if (!half1 && !sameWall(o, id, n2)) continue;
+    // metres from n1 along the new wall, and whether the opening ran the other way round
+    const backwards = half1 ? o.a === id : o.a === n2;
+    const start = half1 ? (o.a === n1 ? o.at : len1 - o.at - o.width) : len1 + (o.a === id ? o.at : len2 - o.at - o.width);
+    o.a = n1;
+    o.b = n2;
+    o.at = Math.max(0, Math.min(Math.max(0, len - o.width), start));
+    if (backwards) o.hingeAtB = !o.hingeAtB || undefined;
+    if (exists) o.a = o.b = '';
+  }
+  if (exists) plan.openings = plan.openings.filter((o) => o.a);
+
+  const onHalf = (a: string, b: string) => sameWall({ a: n1, b: id }, a, b) || sameWall({ a: id, b: n2 }, a, b);
+  const merged = { a: n1, b: n2 };
+  plan.constraints = plan.constraints.flatMap((c): Constraint[] => {
+    if (!constraintIds(c).includes(id)) return [c];
+    if (c.type === 'distance') return [];
+    if (c.type === 'parallel' || c.type === 'equal') {
+      // a tie to a half goes to the new wall when it is a parallel one; the lengths no longer match
+      if (c.type === 'equal') return [];
+      const first = onHalf(c.a, c.b);
+      const second = onHalf(c.c, c.d);
+      if (first && second) return [];
+      return [first ? { ...c, ...merged } : { ...c, c: n1, d: n2 }];
+    }
+    // an angle at the corner held there: gone; at a neighbour, with the corner as one arm: the new neighbour is the arm
+    if (c.b === id) return [];
+    const arm = c.a === id ? 'a' : 'c';
+    return [{ ...c, [arm]: c.b === n1 ? n2 : n1 }];
+  });
+
+  plan.walls = plan.walls.filter((w) => w !== w1 && w !== w2);
+  if (!exists) plan.walls.push({ ...merged, ...(w1.color ? { color: w1.color } : {}), ...(w1.thickness !== undefined ? { thickness: w1.thickness } : {}) });
+  plan.points = plan.points.filter((x) => x.id !== id);
+  return true;
 }
 
 /** Drops joins whose doors are gone. */

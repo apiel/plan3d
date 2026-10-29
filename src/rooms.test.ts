@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, setDistance } from './model';
+import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, sameWall, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, duplicateRoom, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -182,6 +182,86 @@ describe('duplicating a room', () => {
     const door = plan.openings.find((o) => ids.has(o.a))!;
     expect(door).toMatchObject({ type: 'door', at: 1, width: 0.8, color: '#f87171' });
     expect(ids.has(door.b)).toBe(true);
+  });
+});
+
+describe('deleting a corner in the middle of a wall', () => {
+  const wallWithMiddle = () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    const [p0, p1, p2, p3] = plan.points;
+    const mid = addPoint(plan, { x: 0, y: 1.5 });
+    plan.walls = plan.walls.filter((w) => !(w.a === p3.id && w.b === p0.id));
+    plan.walls.push({ a: p3.id, b: mid.id, color: '#f87171', thickness: 0.2 }, { a: mid.id, b: p0.id });
+    return { plan, p0, p1, p2, p3, mid };
+  };
+
+  it('joins its neighbours with one wall that keeps the look and the doors', () => {
+    const { plan, p0, p3, mid } = wallWithMiddle();
+    setDistance(plan, p3.id, mid.id, 1.5);
+    plan.constraints.push({ type: 'angle', a: p3.id, b: mid.id, c: p0.id, value: 180 });
+    plan.openings.push({ id: 'd1', type: 'door', a: p3.id, b: mid.id, at: 0.5, width: 0.8 });
+    plan.openings.push({ id: 'w1', type: 'window', a: p0.id, b: mid.id, at: 0.2, width: 0.6 });
+    expect(mergeCorner(plan, mid.id)).toBe(true);
+    expect(plan.points.some((p) => p.id === mid.id)).toBe(false);
+    expect(plan.walls).toHaveLength(4);
+    expect(plan.walls.find((w) => sameWall(w, p3.id, p0.id))).toMatchObject({ color: '#f87171', thickness: 0.2 });
+    expect(plan.constraints).toHaveLength(0);
+    // from p3 at 0.5 m: the same place; the window ran from p0 at 0.2 m, so 3 - 1.5 + ... measured from p3 it starts at 3 - 0.2 - 0.6
+    const door = plan.openings.find((o) => o.id === 'd1')!;
+    expect(door).toMatchObject({ a: p3.id, b: p0.id, at: 0.5 });
+    const window = plan.openings.find((o) => o.id === 'w1')!;
+    expect(window.a).toBe(p3.id);
+    expect(window.at).toBeCloseTo(3 - 0.2 - 0.6);
+  });
+
+  it('only merges a corner with exactly two walls', () => {
+    const { plan, p0 } = wallWithMiddle();
+    expect(mergeCorner(plan, p0.id)).toBe(true); // a room's corner has two walls too
+    const { plan: other, mid, p1 } = wallWithMiddle();
+    other.walls.push({ a: mid.id, b: p1.id });
+    expect(mergeCorner(other, mid.id)).toBe(false);
+    expect(other.walls).toHaveLength(6);
+  });
+});
+
+describe('deleting a wall', () => {
+  it('takes its doors, measurements and ties with it, and leaves the rest', () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    const [p0, p1, p2, p3] = plan.points;
+    setDistance(plan, p0.id, p1.id, 4);
+    setDistance(plan, p1.id, p2.id, 3);
+    plan.constraints.push({ type: 'rightAngle', a: p0.id, b: p1.id, c: p2.id });
+    plan.constraints.push({ type: 'rightAngle', a: p1.id, b: p2.id, c: p3.id });
+    plan.constraints.push({ type: 'equal', a: p0.id, b: p1.id, c: p2.id, d: p3.id });
+    plan.openings.push({ id: newId(), type: 'door', a: p0.id, b: p1.id, at: 1, width: 0.8 });
+    plan.openings.push({ id: newId(), type: 'window', a: p1.id, b: p2.id, at: 1, width: 0.8 });
+    removeWall(plan, p1.id, p0.id);
+    expect(plan.walls).toHaveLength(3);
+    expect(plan.openings.map((o) => o.type)).toEqual(['window']);
+    // the length of the other wall stays; the right angle at p1 used the removed wall, the one at p2 did not
+    expect(plan.constraints.map((c) => c.type).sort()).toEqual(['distance', 'rightAngle']);
+    expect(plan.points).toHaveLength(4); // p0 still has the wall to p3
+    removeWall(plan, p2.id, p3.id);
+    removeWall(plan, p3.id, p0.id);
+    expect(plan.points.map((p) => p.id)).toEqual([p1.id, p2.id]); // p0 and p3 have no wall left
+  });
+});
+
+describe('duplicating several rooms', () => {
+  it('keeps their places relative to each other, beside the originals', () => {
+    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
+    square(plan, 0, 0, 3, 3);
+    square(plan, 5, 0, 2, 3);
+    const before = plan.points.length;
+    const copies = duplicateRooms(plan, rooms(plan));
+    expect(copies).toHaveLength(2);
+    expect(plan.points).toHaveLength(before * 2);
+    expect(roomComponents(plan)).toHaveLength(4);
+    // one shift for both: the rooms are still 4.5 m apart (centre to centre), and the group moves by its whole width plus 0.5 m
+    const left = roomCentre(plan, copies[0]);
+    const right = roomCentre(plan, copies[1]);
+    expect(right.x - left.x).toBeCloseTo(4.5);
+    expect(left.x).toBeCloseTo(1.5 + 7.5); // shifted by the width of the whole group plus a gap
   });
 });
 

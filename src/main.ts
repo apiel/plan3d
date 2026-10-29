@@ -37,7 +37,7 @@ import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile'
 import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, duplicateRoom, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, pruneJoins, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
+import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
 import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
@@ -54,7 +54,7 @@ type Selection =
   | { kind: 'wall'; a: string; b: string }
   | { kind: 'opening'; id: string }
   /** A room: its corners in order round it. */
-  | { kind: 'room'; loop: string[] }
+  | { kind: 'room'; loop: string[]; /** Rooms added with shift. */ also?: string[][] }
   | { kind: 'stair'; id: string }
   | { kind: 'furniture'; id: string }
   | null;
@@ -654,19 +654,16 @@ function render(): void {
   drawGrid();
 
   // the selected room
-  if (selection?.kind === 'room') {
-    const loop = selectedRoom();
-    if (loop) {
-      ctx.fillStyle = '#60a5fa22';
-      ctx.beginPath();
-      loop.forEach((id, i) => {
-        const s = toScreen(pointById(plan, id)!);
-        if (i) ctx.lineTo(s.x, s.y);
-        else ctx.moveTo(s.x, s.y);
-      });
-      ctx.closePath();
-      ctx.fill();
-    }
+  for (const loop of selectedRooms()) {
+    ctx.fillStyle = '#60a5fa22';
+    ctx.beginPath();
+    loop.forEach((id, i) => {
+      const s = toScreen(pointById(plan, id)!);
+      if (i) ctx.lineTo(s.x, s.y);
+      else ctx.moveTo(s.x, s.y);
+    });
+    ctx.closePath();
+    ctx.fill();
   }
 
   // wall thickness: a band outside the line of each room, which is the face inside the room
@@ -728,7 +725,7 @@ function render(): void {
     const b = pointById(plan, wall.b);
     if (!a || !b) continue;
     const measured = findDistance(plan, wall.a, wall.b) !== undefined;
-    const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || (selection?.kind === 'room' && !!selectedRoom() && loopWalls(plan, selectedRoom()!).includes(wall));
+    const selected = (selection?.kind === 'wall' && ((selection.a === wall.a && selection.b === wall.b) || (selection.a === wall.b && selection.b === wall.a))) || selectedRooms().some((loop) => loopWalls(plan, loop).includes(wall));
     const tie = isTied(wall.a, wall.b);
     ctx.lineWidth = selected || tie ? 5 : measured ? 4 : 3;
     ctx.strokeStyle = selected ? '#60a5fa' : tie ? '#c084fc' : measured ? '#4ade80' : next.has(wallKey(wall.a, wall.b)) ? '#fbbf24' : '#9aa3b0';
@@ -1228,7 +1225,8 @@ function renderSheet(): void {
       wallTies(plan, sel.a, sel.b)
         .map((t, i) => `<div class="row"><span class="tie">${t.type === 'parallel' ? '∥ parallel to' : '= same length as'} the purple wall</span><button id="untie${i}" class="link">Remove</button></div>`)
         .join('') +
-      `<div class="row"><button id="thickAll" class="link">Same thickness for the whole room</button>${measured !== undefined ? '<button id="clearLen" class="link">Forget the length</button>' : ''}</div>`;
+      `<div class="row"><button id="thickAll" class="link">Same thickness for the whole room</button>${measured !== undefined ? '<button id="clearLen" class="link">Forget the length</button>' : ''}</div>` +
+      `<div class="row"><button id="delWall" class="icon danger" title="Delete this wall"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete wall</button></div>`;
     const pickTie = (type: WallTie) => {
       tiePick = { type, a: sel.a, b: sel.b };
       showScanMsg(`Now tap the wall that should be ${type === 'parallel' ? 'parallel to this one' : 'the same length'}. Tap anywhere else to cancel.`);
@@ -1243,6 +1241,12 @@ function renderSheet(): void {
         resolve();
       };
     });
+    el('delWall').onclick = () => {
+      if (!confirm('Delete this wall, with its doors and windows?')) return;
+      removeWall(plan, sel.a, sel.b);
+      closeSheet();
+      resolve();
+    };
     el('thickAll').onclick = () => {
       const t = wallThickness(plan, sel.a, sel.b);
       const ids = roomIdsOf(plan, sel.a);
@@ -1417,6 +1421,26 @@ function renderSheet(): void {
       closeSheet();
       render();
     };
+  } else if (sel?.kind === 'room' && sel.also?.length) {
+    const loops = selectedRooms();
+    if (!loops.length) return closeSheet();
+    const area = loops.reduce((sum, loop) => sum + loopArea(plan, loop), 0);
+    sheet.innerHTML =
+      head(`${loops.length} rooms`, `${area.toFixed(1)} m² · drag to move them together · shift+tap a room to add or remove it`) +
+      `<div class="row"><button id="dupRoom" class="icon" title="Make a copy of these rooms beside them"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Duplicate</button><button id="delRoom" class="icon danger" title="Delete these rooms"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete rooms</button></div>`;
+    el('dupRoom').onclick = () => {
+      const copies = duplicateRooms(plan, loops);
+      selection = { kind: 'room', loop: copies[0], also: copies.slice(1) };
+      sheet.dataset.key = '';
+      resolve();
+      showScanMsg('Copies made beside the rooms. Drag inside them to move them together.');
+    };
+    el('delRoom').onclick = () => {
+      if (!confirm(`Delete these ${loops.length} rooms, with their walls, doors and windows? Walls shared with a room that stays remain.`)) return;
+      for (const loop of loops) deleteRoom(plan, loop);
+      closeSheet();
+      resolve();
+    };
   } else if (sel?.kind === 'room') {
     const loop = selectedRoom();
     if (!loop) return closeSheet();
@@ -1441,7 +1465,7 @@ function renderSheet(): void {
     el('nameOk').onmousedown = (e) => e.preventDefault();
     el('nameOk').onpointerdown = (e) => e.preventDefault();
     el('dupRoom').onclick = () => {
-      selection = { kind: 'room', loop: duplicateRoom(plan, loop) };
+      selection = { kind: 'room', loop: duplicateRooms(plan, [loop])[0] };
       sheet.dataset.key = '';
       resolve();
       showScanMsg('Copy made beside the room. Drag inside it to move it.');
@@ -1485,8 +1509,9 @@ function renderSheet(): void {
       resolve();
     };
     el('del').onclick = () => {
-      if (!confirm('Delete this corner and the walls on it?')) return;
-      removePoint(plan, sel.id);
+      const straight = plan.walls.filter((w) => w.a === sel.id || w.b === sel.id).length === 2;
+      if (!confirm(straight ? 'Delete this corner? The wall stays, running straight between its neighbours.' : 'Delete this corner and the walls on it?')) return;
+      if (!mergeCorner(plan, sel.id)) removePoint(plan, sel.id);
       closeSheet();
       resolve();
     };
@@ -1664,6 +1689,16 @@ canvas.addEventListener('pointerdown', (e) => {
   if (tool === 'furniture') return furnitureTap(pos);
   if (tool) return openingTap(pos, tol);
 
+  if (e.shiftKey && selection?.kind === 'room') {
+    const room = roomAt(plan, cursor);
+    if (room) {
+      toggleRoom(room);
+      render();
+      renderUi();
+      return;
+    }
+  }
+
   const sized = hitStairHandle(pos, tol);
   if (sized) {
     drag = { kind: 'stairSize', id: sized.st.id, handle: sized.handle, from: cursor, start: { ...sized.st }, moved: false };
@@ -1691,7 +1726,7 @@ canvas.addEventListener('pointerdown', (e) => {
   } else if (st) {
     selection = { kind: 'stair', id: st.id };
     drag = { kind: 'stair', id: st.id, from: cursor, start: { x: st.x, y: st.y }, moved: false };
-  } else if (selection?.kind === 'room' && insideRoom(plan, roomIdsOf(plan, selection.loop[0]), cursor)) {
+  } else if (selection?.kind === 'room' && selectedRooms().some((loop) => insideRoom(plan, roomIdsOf(plan, loop[0]), cursor))) {
     drag = { kind: 'room', id: selection.loop[0], from: cursor, down: pos, moved: false };
   } else {
     selection = null;
@@ -1773,7 +1808,7 @@ canvas.addEventListener('pointermove', (e) => {
     render();
   } else if (drag?.kind === 'room') {
     if (drag.moved || dist(pos, drag.down) > 6) {
-      moveRoom(plan, drag.id, sub(cursor, drag.from));
+      moveSelectedRooms(sub(cursor, drag.from));
       drag.from = cursor;
       drag.moved = true;
       render();
@@ -1858,6 +1893,35 @@ function selectedRoom(): string[] | undefined {
   return rooms(plan).find((loop) => [...loop].sort().join() === key);
 }
 
+/** Every selected room as it is now. */
+function selectedRooms(): string[][] {
+  if (selection?.kind !== 'room') return [];
+  const keys = [selection.loop, ...(selection.also ?? [])].map((loop) => [...loop].sort().join());
+  return rooms(plan).filter((loop) => keys.includes([...loop].sort().join()));
+}
+
+/** Moves the selected rooms together; rooms sharing walls are one group and move once. */
+function moveSelectedRooms(d: Vec): void {
+  const groups = new Set<string>();
+  for (const loop of selectedRooms()) {
+    const key = [...roomIdsOf(plan, loop[0])].sort().join();
+    if (groups.has(key)) continue;
+    groups.add(key);
+    moveRoom(plan, loop[0], d);
+  }
+}
+
+/** Shift+tap: adds a room to the selection, or takes it out when it is in already (the last one stays). */
+function toggleRoom(room: string[]): void {
+  if (selection?.kind !== 'room') return;
+  const key = (loop: string[]) => [...loop].sort().join();
+  const all = [selection.loop, ...(selection.also ?? [])];
+  const next = all.some((l) => key(l) === key(room)) ? all.filter((l) => key(l) !== key(room)) : [...all, room];
+  if (!next.length) return;
+  selection = { kind: 'room', loop: next[0], ...(next.length > 1 ? { also: next.slice(1) } : {}) };
+  sheet.dataset.key = '';
+}
+
 /** A tap on empty floor inside a room selects the room. */
 function tapRoom(pos: Vec): void {
   const p = toWorld(pos.x, pos.y);
@@ -1939,7 +2003,7 @@ function nudge(dir: Vec, step: number): boolean {
     if (Math.abs(along) < 0.5) return true; // an arrow across the wall: nothing to do, but the key is still used
     o.at = Math.max(0, Math.min(dist(a, b) - o.width, o.at + Math.sign(along) * step));
   } else if (sel?.kind === 'room') {
-    moveRoom(plan, sel.loop[0], d);
+    moveSelectedRooms(d);
   } else if (sel?.kind === 'stair' || sel?.kind === 'furniture') {
     const x = sel.kind === 'stair' ? plan.stairs.find((s) => s.id === sel.id) : plan.furniture.find((f) => f.id === sel.id);
     if (!x) return false;
@@ -2003,7 +2067,9 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'Escape') closeSheet();
   if (e.key !== 'Delete' && e.key !== 'Backspace') return;
   const sel = selection;
-  if (sel?.kind === 'point') removePoint(plan, sel.id);
+  if (sel?.kind === 'point') {
+    if (!mergeCorner(plan, sel.id)) removePoint(plan, sel.id);
+  } else if (sel?.kind === 'wall') removeWall(plan, sel.a, sel.b);
   else if (sel?.kind === 'opening') plan.openings = plan.openings.filter((x) => x.id !== sel.id);
   else if (sel?.kind === 'stair') plan.stairs = plan.stairs.filter((x) => x.id !== sel.id);
   else if (sel?.kind === 'furniture') plan.furniture = plan.furniture.filter((x) => x.id !== sel.id);
