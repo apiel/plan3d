@@ -2,7 +2,7 @@
 // (moved and scaled together); a group holds one room or several, split by
 // walls inside it. Also the doors that tie groups together.
 
-import { Constraint, Opening, Plan, Vec, Wall, constraintIds, newId, pointById, removePoint, sameWall, wallThickness, wallUnderCorner } from './model';
+import { Constraint, Opening, Plan, PlanPoint, Vec, Wall, constraintIds, newId, pointById, removePoint, sameWall, wallThickness, wallUnderCorner } from './model';
 
 const mid = (a: Vec, b: Vec): Vec => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
@@ -271,8 +271,60 @@ export const roomName = (plan: Plan, loop: string[]): string | undefined => plan
 
 /** Names a room (an empty name removes it); the name goes in the middle of the room. */
 export function setRoomName(plan: Plan, loop: string[], name: string): void {
-  plan.names = plan.names.filter((n) => !insideLoop(plan, loop, n));
+  const all = rooms(plan);
+  // also a name of the same text that fell outside every room, left behind when its room moved
+  plan.names = plan.names.filter((n) => !insideLoop(plan, loop, n) && !(n.name === name && !all.some((l) => insideLoop(plan, l, n))));
   if (name) plan.names.push({ ...spotInside(plan, loop), name });
+}
+
+/** Where `p` goes when the points `before` move to `after`: turned, scaled and shifted like they were. */
+function follow(before: Vec[], after: Vec[], p: Vec): Vec {
+  const c0 = { x: before.reduce((s, q) => s + q.x, 0) / before.length, y: before.reduce((s, q) => s + q.y, 0) / before.length };
+  const c1 = { x: after.reduce((s, q) => s + q.x, 0) / after.length, y: after.reduce((s, q) => s + q.y, 0) / after.length };
+  let re = 0;
+  let im = 0;
+  let den = 0;
+  before.forEach((q, i) => {
+    const bx = q.x - c0.x;
+    const by = q.y - c0.y;
+    const ax = after[i].x - c1.x;
+    const ay = after[i].y - c1.y;
+    re += bx * ax + by * ay;
+    im += bx * ay - by * ax;
+    den += bx * bx + by * by;
+  });
+  const dx = p.x - c0.x;
+  const dy = p.y - c0.y;
+  if (den < 1e-9) return { x: c1.x + dx, y: c1.y + dy };
+  return { x: c1.x + (re * dx - im * dy) / den, y: c1.y + (re * dy + im * dx) / den };
+}
+
+/**
+ * Remembers where each room name sits among the corners of its room (the
+ * nearest corners, for a room not closed yet). The function it returns, called
+ * after the corners have moved (solving, doors joined), moves the names with
+ * them.
+ */
+export function trackNames(plan: Plan): () => void {
+  const comps = roomComponents(plan);
+  const tracked = plan.names.flatMap((n) => {
+    let ids: string[] | undefined = roomAt(plan, n);
+    if (!ids) {
+      const near = plan.points.reduce<PlanPoint | undefined>((best, p) => (!best || Math.hypot(p.x - n.x, p.y - n.y) < Math.hypot(best.x - n.x, best.y - n.y) ? p : best), undefined);
+      ids = near && comps.find((c) => c.includes(near.id));
+    }
+    const pts = ids?.map((id) => pointById(plan, id)).filter((p): p is PlanPoint => !!p) ?? [];
+    return pts.length ? [{ n, ids: pts.map((p) => p.id), before: pts.map((p) => ({ x: p.x, y: p.y })) }] : [];
+  });
+  return () => {
+    for (const { n, ids, before } of tracked) {
+      const after = ids.map((id) => pointById(plan, id)).filter((p): p is PlanPoint => !!p);
+      if (after.length !== before.length) continue;
+      const to = follow(before, after, n);
+      n.x = to.x;
+      n.y = to.y;
+    }
+  };
 }
 
 /** A spot well inside a room: its centre, or for a room bent round (an L), the spot furthest from its walls. */

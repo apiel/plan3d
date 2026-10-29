@@ -37,7 +37,7 @@ import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile'
 import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, roomAt, roomComponents, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
+import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, insideLoop, roomAt, roomComponents, trackNames, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
 import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
@@ -57,6 +57,8 @@ type Selection =
   | { kind: 'room'; loop: string[]; /** Rooms added with shift. */ also?: string[][] }
   | { kind: 'stair'; id: string }
   | { kind: 'furniture'; id: string }
+  /** Several things picked with a rectangle (shift + drag), moved together. */
+  | { kind: 'group'; rooms: string[][]; furniture: string[]; stairs: string[] }
   | null;
 type Tool = 'wall' | 'door' | 'window' | 'part' | 'stair' | 'furniture' | null;
 type Drag =
@@ -69,6 +71,10 @@ type Drag =
   /** `grab`: metres from the start of the opening to where it was picked up; `down`: there on screen. */
   | { kind: 'opening'; id: string; grab: number; down: Vec; moved: boolean }
   | { kind: 'pan'; x: number; y: number; moved: boolean }
+  /** A rectangle being drawn with shift held, from `from` to `to` (screen). */
+  | { kind: 'marquee'; from: Vec; to: Vec; moved: boolean }
+  /** The selected group, dragged as a whole from `from` (world). */
+  | { kind: 'group'; from: Vec; down: Vec; moved: boolean }
   /** The selected room, dragged as a whole from `from` (world). */
   | { kind: 'room'; id: string; from: Vec; down: Vec; moved: boolean }
   | { kind: 'pinch'; d: number; mid: Vec }
@@ -174,11 +180,13 @@ function restore(snapshot: string | undefined): void {
 
 function resolve(): void {
   if (plan.points.length) {
+    const settleNames = trackNames(plan);
     joinWallEnds(plan);
     lastSolve = solve(plan);
     apply(plan, lastSolve);
     pruneJoins(plan);
     applyJoins(plan);
+    settleNames();
   } else {
     lastSolve = null;
   }
@@ -510,7 +518,7 @@ function drawOpeningLabel(o: Opening): void {
 /** Stairs the way plans draw them: outline, one line per step, an arrow going up from a dot at the bottom. */
 function drawStair(st: Stair): void {
   const selected = selection?.kind === 'stair' && selection.id === st.id;
-  const color = selected ? '#60a5fa' : '#c3c9d2';
+  const color = selected || (selection?.kind === 'group' && selection.stairs.includes(st.id)) ? '#60a5fa' : '#c3c9d2';
   const corners = stairCorners(st).map(toScreen);
   ctx.fillStyle = '#1d2129';
   ctx.strokeStyle = color;
@@ -564,7 +572,7 @@ function drawStair(st: Stair): void {
 
 /** A piece of furniture: its library symbol, turned with it. */
 function drawFurniture(f: Furniture): void {
-  const selected = selection?.kind === 'furniture' && selection.id === f.id;
+  const selected = (selection?.kind === 'furniture' && selection.id === f.id) || (selection?.kind === 'group' && selection.furniture.includes(f.id));
   const color = selected ? '#60a5fa' : '#9aa3b0';
   const s = view.scale;
   const c = toScreen(f);
@@ -863,6 +871,20 @@ function render(): void {
     ctx.beginPath();
     ctx.arc(s.x, s.y, selected ? 7 : 5, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // the rectangle drawn with shift held
+  if (drag?.kind === 'marquee' && drag.moved) {
+    const x = Math.min(drag.from.x, drag.to.x);
+    const y = Math.min(drag.from.y, drag.to.y);
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#60a5fa';
+    ctx.fillStyle = '#60a5fa22';
+    ctx.fillRect(x, y, Math.abs(drag.to.x - drag.from.x), Math.abs(drag.to.y - drag.from.y));
+    ctx.strokeRect(x, y, Math.abs(drag.to.x - drag.from.x), Math.abs(drag.to.y - drag.from.y));
+    ctx.restore();
   }
 }
 
@@ -1421,6 +1443,22 @@ function renderSheet(): void {
       closeSheet();
       render();
     };
+  } else if (sel?.kind === 'group') {
+    const loops = selectedRooms();
+    const parts = [
+      loops.length ? `${loops.length} room${loops.length === 1 ? '' : 's'}` : '',
+      sel.furniture.length ? `${sel.furniture.length} furniture` : '',
+      sel.stairs.length ? `${sel.stairs.length} stairs` : '',
+    ].filter(Boolean);
+    sheet.innerHTML =
+      head(`${parts.join(', ')}`, 'drag to move them together') +
+      `<div class="row"><button id="delGroup" class="icon danger" title="Delete everything selected"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete all</button></div>`;
+    el('delGroup').onclick = () => {
+      if (!confirm(`Delete ${parts.join(', ')}?`)) return;
+      deleteGroup(sel);
+      closeSheet();
+      resolve();
+    };
   } else if (sel?.kind === 'room' && sel.also?.length) {
     const loops = selectedRooms();
     if (!loops.length) return closeSheet();
@@ -1689,14 +1727,14 @@ canvas.addEventListener('pointerdown', (e) => {
   if (tool === 'furniture') return furnitureTap(pos);
   if (tool) return openingTap(pos, tol);
 
-  if (e.shiftKey && selection?.kind === 'room') {
-    const room = roomAt(plan, cursor);
-    if (room) {
-      toggleRoom(room);
-      render();
-      renderUi();
-      return;
-    }
+  // shift: a rectangle to pick rooms and things with (a tap with shift adds or removes a room)
+  if (e.shiftKey) {
+    drag = { kind: 'marquee', from: pos, to: pos, moved: false };
+    return;
+  }
+  if (selection?.kind === 'group' && inGroup(cursor)) {
+    drag = { kind: 'group', from: cursor, down: pos, moved: false };
+    return;
   }
 
   const sized = hitStairHandle(pos, tol);
@@ -1760,6 +1798,17 @@ canvas.addEventListener('pointermove', (e) => {
       drag.moved = true;
     }
     render();
+  } else if (drag?.kind === 'marquee') {
+    drag.to = pos;
+    if (dist(pos, drag.from) > 4) drag.moved = true;
+    render();
+  } else if (drag?.kind === 'group') {
+    if (drag.moved || dist(pos, drag.down) > 6) {
+      moveGroup(sub(cursor, drag.from));
+      drag.from = cursor;
+      drag.moved = true;
+      render();
+    }
   } else if (drag?.kind === 'stairSize') {
     const d = drag;
     const st = plan.stairs.find((x) => x.id === d.id);
@@ -1838,6 +1887,27 @@ const pointerEnd = (e: PointerEvent) => {
     if (!pointers.size) drag = null;
     return;
   }
+  if (drag?.kind === 'marquee') {
+    const m = drag;
+    drag = null;
+    if (e.type === 'pointerup') {
+      if (m.moved) marqueeSelect(m.from, m.to);
+      else if (selection?.kind === 'room') {
+        const room = roomAt(plan, toWorld(m.from.x, m.from.y));
+        if (room) toggleRoom(room);
+      } else tapRoom(m.from);
+    }
+    sheet.dataset.key = '';
+    render();
+    renderUi();
+    return;
+  }
+  if (drag?.kind === 'group') {
+    const moved = drag.moved;
+    drag = null;
+    if (moved) resolve();
+    return;
+  }
   const moved = drag?.kind === 'point' && drag.moved;
   if ((drag?.kind === 'stair' || drag?.kind === 'stairSize' || drag?.kind === 'furniture') && drag.moved) commit();
   if (drag?.kind === 'stairSize' && drag.moved) {
@@ -1895,9 +1965,62 @@ function selectedRoom(): string[] | undefined {
 
 /** Every selected room as it is now. */
 function selectedRooms(): string[][] {
-  if (selection?.kind !== 'room') return [];
-  const keys = [selection.loop, ...(selection.also ?? [])].map((loop) => [...loop].sort().join());
+  const picked = selection?.kind === 'room' ? [selection.loop, ...(selection.also ?? [])] : selection?.kind === 'group' ? selection.rooms : [];
+  const keys = picked.map((loop) => [...loop].sort().join());
   return rooms(plan).filter((loop) => keys.includes([...loop].sort().join()));
+}
+
+/** Whether a spot on the plan is on one of the things picked with the rectangle. */
+function inGroup(p: Vec): boolean {
+  if (selection?.kind !== 'group') return false;
+  const g = selection;
+  return (
+    selectedRooms().some((loop) => insideRoom(plan, roomIdsOf(plan, loop[0]), p)) ||
+    plan.furniture.some((f) => g.furniture.includes(f.id) && insideFurniture(f, p)) ||
+    plan.stairs.some((s) => g.stairs.includes(s.id) && insideStair(s, p))
+  );
+}
+
+/** Moves everything in the group: rooms (with what stands in them), and the furniture and stairs picked on their own. */
+function moveGroup(d: Vec): void {
+  if (selection?.kind !== 'group') return;
+  const g = selection;
+  // a piece in a room that moves goes with it already, also in a room next to it that shares walls
+  const moving = new Set(selectedRooms().flatMap((loop) => [...roomIdsOf(plan, loop[0])]));
+  const carried = rooms(plan).filter((loop) => moving.has(loop[0]));
+  for (const f of plan.furniture) {
+    if (!g.furniture.includes(f.id) || carried.some((loop) => insideLoop(plan, loop, f))) continue;
+    f.x += d.x;
+    f.y += d.y;
+  }
+  for (const s of plan.stairs) {
+    if (!g.stairs.includes(s.id)) continue;
+    s.x += d.x;
+    s.y += d.y;
+  }
+  moveSelectedRooms(d);
+}
+
+/** Picks what lies in a rectangle drawn on screen: rooms with all their corners in it, furniture and stairs with their centre in it. */
+function marqueeSelect(a: Vec, b: Vec): void {
+  const p = toWorld(a.x, a.y);
+  const q = toWorld(b.x, b.y);
+  const inside = (v: Vec) => v.x >= Math.min(p.x, q.x) && v.x <= Math.max(p.x, q.x) && v.y >= Math.min(p.y, q.y) && v.y <= Math.max(p.y, q.y);
+  const loops = rooms(plan).filter((loop) => loop.every((id) => inside(pointById(plan, id)!)));
+  // what stands in a picked room comes with it
+  const furniture = showFurniture ? plan.furniture.filter((f) => inside(f) && !loops.some((loop) => insideLoop(plan, loop, f))) : [];
+  const stairs = plan.stairs.filter(inside);
+  if (loops.length + furniture.length + stairs.length === 0) selection = null;
+  else if (!furniture.length && !stairs.length) selection = { kind: 'room', loop: loops[0], ...(loops.length > 1 ? { also: loops.slice(1) } : {}) };
+  else if (!loops.length && furniture.length + stairs.length === 1) selection = furniture.length ? { kind: 'furniture', id: furniture[0].id } : { kind: 'stair', id: stairs[0].id };
+  else selection = { kind: 'group', rooms: loops, furniture: furniture.map((f) => f.id), stairs: stairs.map((s) => s.id) };
+}
+
+/** Deletes everything in the group. */
+function deleteGroup(g: Extract<Selection, { kind: 'group' }>): void {
+  for (const loop of selectedRooms()) deleteRoom(plan, loop);
+  plan.furniture = plan.furniture.filter((f) => !g.furniture.includes(f.id));
+  plan.stairs = plan.stairs.filter((s) => !g.stairs.includes(s.id));
 }
 
 /** Moves the selected rooms together; rooms sharing walls are one group and move once. */
@@ -2002,6 +2125,8 @@ function nudge(dir: Vec, step: number): boolean {
     const along = dir.x * u.x + dir.y * u.y;
     if (Math.abs(along) < 0.5) return true; // an arrow across the wall: nothing to do, but the key is still used
     o.at = Math.max(0, Math.min(dist(a, b) - o.width, o.at + Math.sign(along) * step));
+  } else if (sel?.kind === 'group') {
+    moveGroup(d);
   } else if (sel?.kind === 'room') {
     moveSelectedRooms(d);
   } else if (sel?.kind === 'stair' || sel?.kind === 'furniture') {
@@ -2070,6 +2195,7 @@ window.addEventListener('keydown', (e) => {
   if (sel?.kind === 'point') {
     if (!mergeCorner(plan, sel.id)) removePoint(plan, sel.id);
   } else if (sel?.kind === 'wall') removeWall(plan, sel.a, sel.b);
+  else if (sel?.kind === 'group') deleteGroup(sel);
   else if (sel?.kind === 'opening') plan.openings = plan.openings.filter((x) => x.id !== sel.id);
   else if (sel?.kind === 'stair') plan.stairs = plan.stairs.filter((x) => x.id !== sel.id);
   else if (sel?.kind === 'furniture') plan.furniture = plan.furniture.filter((x) => x.id !== sel.id);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, sameWall, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, trackNames, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -182,6 +182,42 @@ describe('duplicating a room', () => {
     const door = plan.openings.find((o) => ids.has(o.a))!;
     expect(door).toMatchObject({ type: 'door', at: 1, width: 0.8, color: '#f87171' });
     expect(ids.has(door.b)).toBe(true);
+  });
+});
+
+describe('room names', () => {
+  const named = () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    setRoomName(plan, rooms(plan)[0], 'Kitchen');
+    return plan;
+  };
+
+  it('follow their room when its corners are moved, turned and scaled', () => {
+    const plan = named();
+    plan.names[0] = { ...plan.names[0], x: 1, y: 1 };
+    const settle = trackNames(plan);
+    // a quarter turn, twice the size, then 10 m to the right
+    for (const p of plan.points) [p.x, p.y] = [10 - p.y * 2, p.x * 2];
+    settle();
+    expect(plan.names[0].x).toBeCloseTo(10 - 2);
+    expect(plan.names[0].y).toBeCloseTo(2);
+    expect(roomName(plan, rooms(plan)[0])).toBe('Kitchen');
+  });
+
+  it('follow the nearest walls for a room that is not closed', () => {
+    const plan = named();
+    plan.walls.pop();
+    const settle = trackNames(plan);
+    for (const p of plan.points) p.x += 5;
+    settle();
+    expect(plan.names[0].x).toBeCloseTo(7);
+  });
+
+  it('are replaced by naming the room again, also one left outside every room', () => {
+    const plan = named();
+    plan.names.push({ name: 'Kitchen', x: -20, y: 7 });
+    setRoomName(plan, rooms(plan)[0], 'Kitchen');
+    expect(plan.names).toHaveLength(1);
   });
 });
 
