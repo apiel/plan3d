@@ -27,8 +27,13 @@ The JSON:
   * Units are metres, angles degrees. x goes right, y goes DOWN.
   * name: the project's name (optional), also used as the file name.
   * height: floor to ceiling in metres (optional, default 2.5).
-  * points: corners {id, x, y, sensor: {x, y}}. sensor is where the camera put the
-    corner; for a new corner, make sensor the same as x, y.
+  * points: corners {id, x, y, sensor: {x, y}, floor?}. sensor is where the camera
+    put the corner; for a new corner, make sensor the same as x, y. floor: the
+    floor's name as the user wrote it, missing for the ground floor, for example
+    "Cellar", "First floor", "Attic 3"; a number in the name or a word like cellar,
+    first, upper, attic says how high it is. Corners joined by walls, and rooms
+    joined through a door, are on one floor. The floors are drawn side by side on the plan; the 3D
+    view stacks them.
   * walls: {a, b, thickness?, color?}: a straight wall between corners a and b. The
     line a-b is the face of the wall inside the room; thickness (default 0.1) grows
     outwards, away from the room.

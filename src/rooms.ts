@@ -525,6 +525,79 @@ export function mergeCorner(plan: Plan, id: string): boolean {
   return true;
 }
 
+/** The name of a floor from its number: 0 the ground floor, 1 the one above, -1 the cellar. */
+export const floorName = (floor: number): string =>
+  floor === 0 ? 'Ground floor' : floor < 0 ? (floor === -1 ? 'Cellar' : `Cellar ${-floor}`) : ['', 'First floor', 'Second floor', 'Third floor'][floor] ?? `Floor ${floor}`;
+
+/** What to call a corner's floor. */
+export const floorLabel = (floor: string | number | undefined): string => (floor === undefined ? floorName(0) : typeof floor === 'number' ? floorName(floor) : floor);
+
+const FLOOR_WORDS: [RegExp, number][] = [
+  [/cellar|basement|underground|sous-?sol|keller|cave/, -1],
+  [/ground|\bgf\b|rdc|rez|erdgeschoss|\bmain\b/, 0],
+  [/first|1st|upper|premier/, 1],
+  [/second|2nd|deuxi/, 2],
+  [/third|3rd|troisi/, 3],
+  [/attic|loft|roof|grenier|comble/, 50],
+];
+
+/**
+ * How high a floor is, from what the user wrote: a number in it ("Floor 2",
+ * "-1") or a word ("cellar", "ground", "upper", "attic"). A cellar's number
+ * counts down. Undefined when it says nothing about how high.
+ */
+export function floorLevel(floor: string | number | undefined): number | undefined {
+  if (floor === undefined) return 0;
+  if (typeof floor === 'number') return floor;
+  const s = floor.trim().toLowerCase();
+  const n = /-?\d+/.exec(s);
+  const cellar = FLOOR_WORDS[0][0].test(s);
+  if (n) return cellar ? -Math.abs(parseInt(n[0], 10)) : parseInt(n[0], 10);
+  return FLOOR_WORDS.find(([re]) => re.test(s))?.[1];
+}
+
+/** How high each corner's floor is; a name that says nothing about it goes above the floors that do, in the order the names appear. */
+export function pointLevels(plan: Plan): Map<string, number> {
+  const unknown = new Map<string, number>();
+  const out = new Map<string, number>();
+  for (const p of plan.points) {
+    let level = floorLevel(p.floor);
+    if (level === undefined) {
+      const key = String(p.floor).trim().toLowerCase();
+      if (!unknown.has(key)) unknown.set(key, 100 + unknown.size);
+      level = unknown.get(key)!;
+    }
+    out.set(p.id, level);
+  }
+  return out;
+}
+
+/** How high the floor is that a spot on the plan is on: that of the room it is in, else of the nearest corner. */
+export function floorAt(plan: Plan, p: Vec): number {
+  const loop = roomAt(plan, p);
+  const corner = loop
+    ? pointById(plan, loop[0])
+    : plan.points.reduce<PlanPoint | undefined>((best, q) => (!best || Math.hypot(q.x - p.x, q.y - p.y) < Math.hypot(best.x - p.x, best.y - p.y) ? q : best), undefined);
+  return (corner && pointLevels(plan).get(corner.id)) ?? 0;
+}
+
+/**
+ * Puts rooms on a floor with the name the user wrote, and with them the rooms
+ * sharing walls with them and the rooms joined to them through a door. A
+ * number is turned into a name ("1" is "First floor"); the ground floor is no name.
+ */
+export function setFloor(plan: Plan, loops: string[][], name: string): void {
+  let text = name.trim();
+  if (/^-?\d+$/.test(text)) text = floorName(parseInt(text, 10));
+  const ground = !text || (floorLevel(text) === 0 && /^(ground( floor)?|0)$/i.test(text));
+  const ids = new Set(loops.flatMap((loop) => [...joinedGroup(plan, loop[0])]));
+  for (const p of plan.points) {
+    if (!ids.has(p.id)) continue;
+    if (ground) delete p.floor;
+    else p.floor = text;
+  }
+}
+
 /** Drops joins whose doors are gone. */
 export function pruneJoins(plan: Plan): void {
   const doors = new Set(plan.openings.filter((o) => o.type === 'door').map((o) => o.id));

@@ -37,7 +37,7 @@ import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile'
 import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, insideLoop, roomAt, roomComponents, trackNames, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
+import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, floorLabel, floorLevel, insideLoop, pointLevels, roomAt, roomComponents, setFloor, trackNames, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
 import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
@@ -785,6 +785,21 @@ function render(): void {
     labelBoxes.push({ a: wall.a, b: wall.b, ...at, ...size });
   }
 
+  // when floors are set, each one is named above its rooms
+  if (plan.points.some((p) => p.floor !== undefined)) {
+    const levels = pointLevels(plan);
+    const byFloor = new Map<number, PlanPoint[]>();
+    for (const p of plan.points) byFloor.set(levels.get(p.id) ?? 0, [...(byFloor.get(levels.get(p.id) ?? 0) ?? []), p]);
+    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    for (const pts of byFloor.values()) {
+      const at = toScreen({ x: Math.min(...pts.map((p) => p.x)), y: Math.min(...pts.map((p) => p.y)) });
+      ctx.fillText(floorLabel(pts.find((p) => p.floor !== undefined)?.floor).toUpperCase(), at.x, at.y - 56);
+    }
+  }
+
   // room names, where they were put down
   for (const n of plan.names) {
     const at = toScreen(n);
@@ -1084,6 +1099,37 @@ function colorRow(current: string | undefined, onSet: (c: string | undefined) =>
 
 const head = (title: string, detail = '') =>
   `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
+
+/** The name of the floor of the rooms picked, to write; the 3D view stacks the floors by what the names say about how high they are. */
+function floorRow(loops: string[][]): string {
+  const labels = new Set(loops.map((loop) => floorLabel(pointById(plan, loop[0])?.floor)));
+  const now = labels.size === 1 ? [...labels][0] : '';
+  const known = [...new Set([...plan.points.map((p) => floorLabel(p.floor)), 'Ground floor', 'First floor', 'Cellar', 'Attic'])];
+  queueMicrotask(() => {
+    el('floorForm').onsubmit = (e) => {
+      e.preventDefault();
+      const text = el<HTMLInputElement>('floorNo').value.trim();
+      setFloor(plan, loops, text);
+      el<HTMLInputElement>('floorNo').blur();
+      commit();
+      sheet.dataset.key = '';
+      render();
+      renderUi();
+      if (text && floorLevel(text) === undefined) {
+        showScanMsg(`"${text}" is put above the other floors. Put a number in the name to choose, like "Attic 3" or "Cellar -1".`);
+        setTimeout(() => showScanMsg(null), 6000);
+      }
+    };
+    el('floorOk').onmousedown = (e) => e.preventDefault();
+    el('floorOk').onpointerdown = (e) => e.preventDefault();
+  });
+  return (
+    `<form id="floorForm" class="row"><label class="num"><span class="muted">Floor</span>` +
+    `<input id="floorNo" type="text" list="floorNames" enterkeyhint="done" autocomplete="off" placeholder="Ground floor, Cellar, First floor…" value="${escapeHtml(now)}"></label>` +
+    `<datalist id="floorNames">${known.map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>` +
+    `<button id="floorOk" class="primary">OK</button></form>`
+  );
+}
 
 /** Three buttons for how the stairs end at the bottom or the top: turning left, straight, turning right (going up). */
 function turnRow(end: 'bottom' | 'top', current: Turn | undefined): string {
@@ -1463,6 +1509,7 @@ function renderSheet(): void {
     ].filter(Boolean);
     sheet.innerHTML =
       head(`${parts.join(', ')}`, 'drag to move them together') +
+      (loops.length ? floorRow(loops) : '') +
       `<div class="row"><button id="delGroup" class="icon danger" title="Delete everything selected"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete all</button></div>`;
     el('delGroup').onclick = () => {
       if (!confirm(`Delete ${parts.join(', ')}?`)) return;
@@ -1476,6 +1523,7 @@ function renderSheet(): void {
     const area = loops.reduce((sum, loop) => sum + loopArea(plan, loop), 0);
     sheet.innerHTML =
       head(`${loops.length} rooms`, `${area.toFixed(1)} m² · drag to move them together · shift+tap a room to add or remove it`) +
+      floorRow(loops) +
       `<div class="row"><button id="dupRoom" class="icon" title="Make a copy of these rooms beside them"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Duplicate</button><button id="delRoom" class="icon danger" title="Delete these rooms"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete rooms</button></div>`;
     el('dupRoom').onclick = () => {
       const copies = duplicateRooms(plan, loops);
@@ -1499,6 +1547,7 @@ function renderSheet(): void {
     sheet.innerHTML =
       head(escapeHtml(roomName(plan, loop) ?? 'Room'), `${area.toFixed(1)} m² · ${new Set(loop).size} corners · ${doors} door/window${doors === 1 ? '' : 's'}`) +
       `<form id="nameForm" class="row"><label class="num"><span class="muted">Name</span><input id="name" type="text" enterkeyhint="done" autocomplete="off" placeholder="Kitchen, bedroom…" value="${escapeHtml(roomName(plan, loop) ?? '')}"></label><button id="nameOk" class="primary">OK</button></form>` +
+      floorRow([loop]) +
       `<div class="row">` +
       `<button id="dupRoom" class="icon" title="Make a copy of this room beside it"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Duplicate</button>` +
       `<button id="delRoom" class="icon danger" title="Delete this room"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete room</button></div>`;

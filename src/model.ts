@@ -10,6 +10,8 @@ export interface PlanPoint extends Vec {
   /** Where the capture (depth/AR/hand-drawn) put this point. The solver pulls
    *  towards it weakly, so manual measurements win when they disagree. */
   sensor: Vec;
+  /** The name of the floor of the house this corner is on, as the user wrote it ("Cellar", "First floor", "Attic 3"); missing: the ground floor. Rooms sharing corners are on one floor. */
+  floor?: string | number;
 }
 
 /** A room's name, put down at a spot inside the room. */

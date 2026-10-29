@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, sameWall, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, trackNames, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, trackNames, floorAt, floorLevel, setFloor, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -182,6 +182,54 @@ describe('duplicating a room', () => {
     const door = plan.openings.find((o) => ids.has(o.a))!;
     expect(door).toMatchObject({ type: 'door', at: 1, width: 0.8, color: '#f87171' });
     expect(ids.has(door.b)).toBe(true);
+  });
+});
+
+describe('floors', () => {
+  it('put a room and the rooms sharing walls with it on a floor, and tell what is on it', () => {
+    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
+    square(plan, 0, 0, 3, 3);
+    square(plan, 10, 0, 3, 3);
+    expect(floorAt(plan, { x: 11, y: 1 })).toBe(0);
+    setFloor(plan, [rooms(plan)[1]], 'First floor');
+    expect(floorAt(plan, { x: 11, y: 1 })).toBe(1);
+    expect(floorAt(plan, { x: 1, y: 1 })).toBe(0);
+    expect(floorAt(plan, { x: 15, y: 1 })).toBe(1); // outside every room: the nearest corner's floor
+    setFloor(plan, [rooms(plan)[1]], 'ground floor');
+    expect(plan.points.some((p) => p.floor !== undefined)).toBe(false);
+  });
+});
+
+describe('floor names', () => {
+  it('say how high a floor is, by a number or a word', () => {
+    const levels = Object.fromEntries(['Ground floor', 'rez-de-chaussée', 'First floor', '1st', 'Floor 2', 'second floor', 'Cellar', 'Cellar 2', 'basement', '-1', 'Attic 3', 'attic', 'Garage'].map((n) => [n, floorLevel(n)]));
+    expect(levels).toEqual({
+      'Ground floor': 0, 'rez-de-chaussée': 0, 'First floor': 1, '1st': 1, 'Floor 2': 2, 'second floor': 2,
+      Cellar: -1, 'Cellar 2': -2, basement: -1, '-1': -1, 'Attic 3': 3, attic: 50, Garage: undefined,
+    });
+    expect(floorLevel(undefined)).toBe(0);
+  });
+
+  it('turn a number typed in into a name, and keep other names as they are', () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    setFloor(plan, rooms(plan), '2');
+    expect(plan.points[0].floor).toBe('Second floor');
+    setFloor(plan, rooms(plan), ' Mezzanine ');
+    expect(plan.points[0].floor).toBe('Mezzanine');
+  });
+});
+
+describe('floors of joined rooms', () => {
+  it('follow the rooms joined to them through a door, with any floor number', () => {
+    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
+    const a = square(plan, 0, 0, 3, 3);
+    const b = square(plan, 10, 0, 3, 3);
+    square(plan, 30, 0, 3, 3);
+    const d1 = door(plan, a, 0, 1);
+    const d2 = door(plan, b, 0, 1);
+    plan.joins.push({ a: d1, b: d2 });
+    setFloor(plan, [rooms(plan)[0]], 'Cellar');
+    expect(plan.points.filter((p) => p.floor === 'Cellar')).toHaveLength(8); // both joined rooms, not the third one
   });
 });
 

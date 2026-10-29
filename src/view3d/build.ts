@@ -3,7 +3,7 @@
 // into pieces around their doors and windows; three.js is kept out of here.
 
 import { Plan, Vec, Wall, pointById, sameWall, wallThickness, windowFrame } from '../model';
-import { groupLoop, insideLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
+import { floorAt, groupLoop, pointLevels, insideLoop, insideRoom, roomIdsOf, roomOutline, rooms } from '../rooms';
 import { stairCorners, stairSteps } from '../stairs';
 import { furnitureOutline } from '../furniture';
 
@@ -54,8 +54,59 @@ function outerCorners(plan: Plan): Map<Wall, { a: Vec; b: Vec }> {
   return out;
 }
 
-/** The solids of the plan: walls with their openings cut out, window panes, floors, stairs and furniture. */
+const SLAB = 0.2; // between one floor's ceiling and the next one's floor
+
+/**
+ * The solids of the plan: walls with their openings cut out, window panes,
+ * floors, stairs and furniture. With more than one floor, each is built on its
+ * own and they are stacked, the upper one moved so its stairs going down are
+ * over the stairs going up below, and the stairs rise to meet the next floor.
+ */
 export function buildSolids(plan: Plan): Solid[] {
+  const levelOf = pointLevels(plan);
+  const levels = [...new Set(levelOf.values())].sort((a, b) => a - b);
+  if (levels.length < 2) return buildLevel(plan, { slab: FLOOR });
+
+  const gap = (plan.height ?? DEFAULT_HEIGHT) + SLAB;
+  const stairFloor = new Map(plan.stairs.map((s) => [s, floorAt(plan, s)]));
+  const furnitureFloor = new Map(plan.furniture.map((f) => [f, floorAt(plan, f)]));
+  const out: Solid[] = [];
+  let offset = { x: 0, y: 0 };
+  let below: Plan | undefined;
+  for (const [index, level] of levels.entries()) {
+    const ids = new Set(plan.points.filter((p) => levelOf.get(p.id) === level).map((p) => p.id));
+    const here: Plan = {
+      ...plan,
+      points: plan.points.filter((p) => ids.has(p.id)),
+      walls: plan.walls.filter((w) => ids.has(w.a) && ids.has(w.b)),
+      openings: plan.openings.filter((o) => ids.has(o.a) && ids.has(o.b)),
+      constraints: [],
+      joins: [],
+      names: [],
+      stairs: plan.stairs.filter((s) => stairFloor.get(s) === level),
+      furniture: plan.furniture.filter((f) => furnitureFloor.get(f) === level),
+    };
+    // stairs up on the floor below and stairs down here are one staircase: put them over each other
+    const up = below?.stairs.find((s) => !s.down);
+    const down = here.stairs.find((s) => s.down);
+    if (up && down) offset = { x: offset.x + up.x - down.x, y: offset.y + up.y - down.y };
+    else if (below) {
+      // no stairs to go by: line up the top left corners
+      const corner = (p: Plan) => ({ x: Math.min(...p.points.map((q) => q.x)), y: Math.min(...p.points.map((q) => q.y)) });
+      const [a, b] = [corner(below), corner(here)];
+      offset = { x: offset.x + a.x - b.x, y: offset.y + a.y - b.y };
+    }
+    const z = index * gap;
+    for (const s of buildLevel(here, { gap, slab: index === 0 ? FLOOR : SLAB })) {
+      const move = (p: Vec) => ({ x: p.x + offset.x, y: p.y + offset.y });
+      out.push({ ...s, pts: s.pts.map(move), ...(s.holes ? { holes: s.holes.map((h) => h.map(move)) } : {}), z0: s.z0 + z, z1: s.z1 + z });
+    }
+    below = here;
+  }
+  return out;
+}
+
+function buildLevel(plan: Plan, level: { gap?: number; slab: number }): Solid[] {
   const height = plan.height ?? DEFAULT_HEIGHT;
   const solids: Solid[] = [];
   const mitred = outerCorners(plan);
@@ -115,14 +166,16 @@ export function buildSolids(plan: Plan): Solid[] {
   for (const loop of rooms(plan)) {
     const pts = loop.map((id) => pointById(plan, id)!);
     const holes = wells.filter((w) => w.every((p) => insideLoop(plan, loop, p)));
-    solids.push({ kind: 'floor', pts, z0: -FLOOR, z1: 0, ...(holes.length ? { holes } : {}) });
+    solids.push({ kind: 'floor', pts, z0: -level.slab, z1: 0, ...(holes.length ? { holes } : {}) });
   }
 
   // stairs up rise from this floor; stairs down reach this floor with their last step and drop to the floor under
   for (const s of plan.stairs) {
     const steps = stairSteps(s);
-    const drop = s.down ? steps.length * STEP_RISE : 0;
-    steps.forEach((pts, i) => solids.push({ kind: 'stair', pts, z0: -drop, z1: (i + 1) * STEP_RISE - drop }));
+    // with floors above and below, a flight is as tall as the way between them
+    const rise = level.gap ? level.gap / steps.length : STEP_RISE;
+    const drop = s.down ? steps.length * rise : 0;
+    steps.forEach((pts, i) => solids.push({ kind: 'stair', pts, z0: -drop, z1: (i + 1) * rise - drop }));
   }
 
   for (const f of plan.furniture) solids.push({ kind: 'furniture', pts: furnitureOutline(f), z0: 0, z1: f.h });
