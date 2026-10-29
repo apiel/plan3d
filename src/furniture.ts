@@ -91,6 +91,8 @@ export const LIBRARY: FurnitureItem[] = [
   { kind: 'desk', name: 'Desk', group: 'Office & other', w: 1.2, d: 0.6, h: 0.75, shapes: [box(0.02)] },
   { kind: 'officeChair', name: 'Office chair', group: 'Office & other', w: 0.6, d: 0.6, h: 1.0, round: true, shapes: [E(0, 0, 0.5, 0.5), R(-0.35, 0.2, 0.35, 0.38, 0.04)] },
   { kind: 'boiler', name: 'Boiler', group: 'Office & other', w: 0.4, d: 0.35, h: 0.7, shapes: [BOX, E(0, 0, 0.25, 0.25)] },
+  // a raised floor to stand on: see through on the plan, with its height written on it
+  { kind: 'platform', name: 'Platform', group: 'Office & other', w: 1.0, d: 1.0, h: 0.6, shapes: [BOX, R(-0.4, -0.4, 0.4, 0.4)] },
   { kind: 'box', name: 'Box', group: 'Office & other', w: 0.6, d: 0.6, h: 0.9, shapes: [BOX, L(-0.5, -0.5, 0.5, 0.5), L(0.5, -0.5, -0.5, 0.5)] },
 ];
 

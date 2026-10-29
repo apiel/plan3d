@@ -37,9 +37,10 @@ import { nameFromFile, planFileName, planToSvg, readPlanFile } from './planfile'
 import { DriveFile, driveEnabled, loadFromDrive, pickerEnabled, pickFromDrive, saveToDrive } from './drive';
 import { downloadScan, hasScanData, missingForScan, startScan } from './scan';
 import { History } from './history';
-import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, floorLabel, floorLevel, insideLoop, pointLevels, roomAt, roomComponents, setFloor, trackNames, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
+import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, joinWallEnds, loopArea, loopWalls, moveRoom, insideRoom, openingFrame, mergeCorner, pruneJoins, removeWall, clipCentre, copyRooms, floorLabel, insideLoop, pasteClip, roomAt, roomComponents, setFloor, trackNames, roomIdsOf, roomName, rooms, setRoomName, roomOutline, setWallThickness, unjoin } from './rooms';
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
+import { DEFAULT_HEIGHT } from './view3d/build';
 import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
 import { load, loadDriveFile, save, saveDriveFile } from './storage';
 
@@ -581,7 +582,8 @@ function drawFurniture(f: Furniture): void {
   ctx.save();
   ctx.translate(c.x, c.y);
   ctx.rotate((f.angle * Math.PI) / 180);
-  ctx.fillStyle = '#1d2129';
+  // a platform is seen through: what stands under it (stairs) stays visible
+  ctx.fillStyle = f.kind === 'platform' ? '#60a5fa14' : '#1d2129';
   ctx.strokeStyle = color;
   ctx.lineWidth = selected ? 2 : 1.2;
   ctx.lineCap = 'round';
@@ -618,6 +620,13 @@ function drawFurniture(f: Furniture): void {
     ctx.stroke();
   }
   ctx.restore();
+  if (f.kind === 'platform' && Math.min(f.w, f.d) * s > 36) {
+    ctx.fillStyle = color;
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`+${(f.h * 100).toFixed(0)} cm`, c.x, c.y);
+  }
   if (selected) {
     label(`${(f.w * 100).toFixed(0)} cm`, toScreen(furniturePoint(f, 0, 0.5 + 0.2 / f.d)), color, false);
     label(`${(f.d * 100).toFixed(0)} cm`, toScreen(furniturePoint(f, 0.5 + 0.3 / f.w, 0)), color, false);
@@ -787,16 +796,15 @@ function render(): void {
 
   // when floors are set, each one is named above its rooms
   if (plan.points.some((p) => p.floor !== undefined)) {
-    const levels = pointLevels(plan);
-    const byFloor = new Map<number, PlanPoint[]>();
-    for (const p of plan.points) byFloor.set(levels.get(p.id) ?? 0, [...(byFloor.get(levels.get(p.id) ?? 0) ?? []), p]);
+    const byFloor = new Map<string, PlanPoint[]>();
+    for (const p of plan.points) byFloor.set(floorLabel(p.floor), [...(byFloor.get(floorLabel(p.floor)) ?? []), p]);
     ctx.font = '600 12px system-ui, sans-serif';
     ctx.fillStyle = '#6b7280';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    for (const pts of byFloor.values()) {
+    for (const [name, pts] of byFloor) {
       const at = toScreen({ x: Math.min(...pts.map((p) => p.x)), y: Math.min(...pts.map((p) => p.y)) });
-      ctx.fillText(floorLabel(pts.find((p) => p.floor !== undefined)?.floor).toUpperCase(), at.x, at.y - 56);
+      ctx.fillText(name.toUpperCase(), at.x, at.y - 56);
     }
   }
 
@@ -1100,7 +1108,7 @@ function colorRow(current: string | undefined, onSet: (c: string | undefined) =>
 const head = (title: string, detail = '') =>
   `<div class="head"><b>${title}</b><span class="muted">${detail}</span><button class="close" id="close" aria-label="Close">×</button></div>`;
 
-/** The name of the floor of the rooms picked, to write; the 3D view stacks the floors by what the names say about how high they are. */
+/** The name of the floor of the rooms picked, to write ("Ground floor", "Upper floor - living area"). */
 function floorRow(loops: string[][]): string {
   const labels = new Set(loops.map((loop) => floorLabel(pointById(plan, loop[0])?.floor)));
   const now = labels.size === 1 ? [...labels][0] : '';
@@ -1115,10 +1123,6 @@ function floorRow(loops: string[][]): string {
       sheet.dataset.key = '';
       render();
       renderUi();
-      if (text && floorLevel(text) === undefined) {
-        showScanMsg(`"${text}" is put above the other floors. Put a number in the name to choose, like "Attic 3" or "Cellar -1".`);
-        setTimeout(() => showScanMsg(null), 6000);
-      }
     };
     el('floorOk').onmousedown = (e) => e.preventDefault();
     el('floorOk').onpointerdown = (e) => e.preventDefault();
@@ -1278,6 +1282,13 @@ function renderSheet(): void {
         closeSheet();
         resolve();
       }, { id: 'thick', label: 'Thickness', focus: false }) +
+      numberRow(plan.walls.find((w) => sameWall(w, sel.a, sel.b))?.height, (plan.height ?? DEFAULT_HEIGHT) * 100, (m) => {
+        const wall = plan.walls.find((w) => sameWall(w, sel.a, sel.b));
+        if (wall) wall.height = m;
+        commit();
+        sheet.dataset.key = '';
+        renderUi();
+      }, { id: 'wallH', label: 'Height', focus: false }) +
       colorRow(plan.walls.find((w) => sameWall(w, sel.a, sel.b))?.color, (c) => {
         const wall = plan.walls.find((w) => sameWall(w, sel.a, sel.b));
         if (wall) wall.color = c;
@@ -1293,7 +1304,7 @@ function renderSheet(): void {
       wallTies(plan, sel.a, sel.b)
         .map((t, i) => `<div class="row"><span class="tie">${t.type === 'parallel' ? '∥ parallel to' : '= same length as'} the purple wall</span><button id="untie${i}" class="link">Remove</button></div>`)
         .join('') +
-      `<div class="row"><button id="thickAll" class="link">Same thickness for the whole room</button>${measured !== undefined ? '<button id="clearLen" class="link">Forget the length</button>' : ''}</div>` +
+      `<div class="row"><button id="thickAll" class="link">Same thickness for the whole room</button>${measured !== undefined ? '<button id="clearLen" class="link">Forget the length</button>' : ''}${plan.walls.find((w) => sameWall(w, sel.a, sel.b))?.height !== undefined ? '<button id="clearH" class="link">Height as the rest</button>' : ''}</div>` +
       `<div class="row"><button id="delWall" class="icon danger" title="Delete this wall"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete wall</button></div>`;
     const pickTie = (type: WallTie) => {
       tiePick = { type, a: sel.a, b: sel.b };
@@ -1315,6 +1326,15 @@ function renderSheet(): void {
       closeSheet();
       resolve();
     };
+    const lowWall = plan.walls.find((w) => sameWall(w, sel.a, sel.b));
+    if (lowWall?.height !== undefined) {
+      el('clearH').onclick = () => {
+        delete lowWall.height;
+        commit();
+        sheet.dataset.key = '';
+        renderUi();
+      };
+    }
     el('thickAll').onclick = () => {
       const t = wallThickness(plan, sel.a, sel.b);
       const ids = roomIdsOf(plan, sel.a);
@@ -2209,6 +2229,63 @@ window.addEventListener('keyup', (e) => {
   else resolve(); // corners moved: the solver settles them, and joined rooms follow a door
   sheet.dataset.key = '';
   renderUi();
+});
+
+// ---------- copy and paste ----------
+
+/** What is selected, as a clip: rooms with what stands in them, or a piece of furniture or a flight of stairs. */
+function selectionClip(): ReturnType<typeof copyRooms> | null {
+  const sel = selection;
+  if (sel?.kind === 'room') return copyRooms(plan, selectedRooms());
+  if (sel?.kind === 'group') return copyRooms(plan, selectedRooms(), true, { furniture: sel.furniture, stairs: sel.stairs });
+  if (sel?.kind === 'furniture') return copyRooms(plan, [], false, { furniture: [sel.id] });
+  if (sel?.kind === 'stair') return copyRooms(plan, [], false, { stairs: [sel.id] });
+  return null;
+}
+
+const typing = (t: EventTarget | null) => t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
+let lastPaste: Vec | null = null;
+
+// the browser's own copy and paste, so it also works from one plan to another
+document.addEventListener('copy', (e) => {
+  if (typing(e.target)) return;
+  const clip = selectionClip();
+  if (!clip) return;
+  e.clipboardData?.setData('text/plain', JSON.stringify({ plan3d: 'clip', ...clip }));
+  e.preventDefault();
+  showScanMsg('Copied. Ctrl+V puts it where the mouse is.');
+  setTimeout(() => showScanMsg(null), 2500);
+});
+
+document.addEventListener('paste', (e) => {
+  if (typing(e.target)) return;
+  let data: (ReturnType<typeof copyRooms> & { plan3d?: string }) | undefined;
+  try {
+    data = JSON.parse(e.clipboardData?.getData('text/plain') ?? '');
+  } catch {
+    return;
+  }
+  if (data?.plan3d !== 'clip' || !Array.isArray(data.points) || !Array.isArray(data.loops) || !Array.isArray(data.furniture) || !Array.isArray(data.stairs)) return;
+  e.preventDefault();
+  const clip = data;
+  const centre = clipCentre(clip);
+  if (!Number.isFinite(centre.x)) return;
+  // where the mouse is; not on top of where it came from or of the last paste, so a copy is always seen
+  let at = cursor;
+  if (lastPaste && dist(at, lastPaste) < 0.15) at = { x: lastPaste.x + 0.4, y: lastPaste.y + 0.4 };
+  else if (dist(at, centre) < 0.15) at = { x: centre.x + 0.5, y: centre.y + 0.5 };
+  lastPaste = at;
+  const made = pasteClip(plan, clip, { x: at.x - centre.x, y: at.y - centre.y });
+  // furniture and stairs standing in the pasted rooms are part of them
+  const all = rooms(plan);
+  const loose = (p: Vec) => !made.loops.some((loop) => all.some((l) => l.length === loop.length && loop.every((id) => l.includes(id)) && insideLoop(plan, l, p)));
+  const furniture = made.furniture.filter(loose);
+  const stairs = made.stairs.filter(loose);
+  if (made.loops.length && !furniture.length && !stairs.length) selection = { kind: 'room', loop: made.loops[0], ...(made.loops.length > 1 ? { also: made.loops.slice(1) } : {}) };
+  else if (!made.loops.length && furniture.length + stairs.length === 1) selection = furniture.length ? { kind: 'furniture', id: furniture[0].id } : { kind: 'stair', id: stairs[0].id };
+  else selection = { kind: 'group', rooms: made.loops, furniture: furniture.map((f) => f.id), stairs: stairs.map((s) => s.id) };
+  sheet.dataset.key = '';
+  resolve();
 });
 
 window.addEventListener('keydown', (e) => {

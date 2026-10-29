@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_THICKNESS, Plan, Vec, addPoint, newId, roomFromCorners, sameWall, setDistance } from './model';
 import { apply, solve } from './solver';
-import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, trackNames, floorAt, floorLevel, setFloor, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
+import { applyJoins, deleteRoom, duplicateRoom, duplicateRooms, mergeCorner, removeWall, insideRoom, joinWallEnds, loopArea, moveRoom, roomAt, roomName, rooms, setRoomName, trackNames, setFloor, copyRooms, pasteClip, clipCentre, joinDoors, openingFrame, roomArea, roomComponents, roomIdsOf, roomOutline, setWallThickness } from './rooms';
 
 const square = (plan: Plan, x: number, y: number, w: number, h: number): string[] => {
   const room = roomFromCorners([
@@ -185,37 +185,13 @@ describe('duplicating a room', () => {
   });
 });
 
-describe('floors', () => {
-  it('put a room and the rooms sharing walls with it on a floor, and tell what is on it', () => {
-    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
-    square(plan, 0, 0, 3, 3);
-    square(plan, 10, 0, 3, 3);
-    expect(floorAt(plan, { x: 11, y: 1 })).toBe(0);
-    setFloor(plan, [rooms(plan)[1]], 'First floor');
-    expect(floorAt(plan, { x: 11, y: 1 })).toBe(1);
-    expect(floorAt(plan, { x: 1, y: 1 })).toBe(0);
-    expect(floorAt(plan, { x: 15, y: 1 })).toBe(1); // outside every room: the nearest corner's floor
-    setFloor(plan, [rooms(plan)[1]], 'ground floor');
-    expect(plan.points.some((p) => p.floor !== undefined)).toBe(false);
-  });
-});
-
 describe('floor names', () => {
-  it('say how high a floor is, by a number or a word', () => {
-    const levels = Object.fromEntries(['Ground floor', 'rez-de-chaussée', 'First floor', '1st', 'Floor 2', 'second floor', 'Cellar', 'Cellar 2', 'basement', '-1', 'Attic 3', 'attic', 'Garage'].map((n) => [n, floorLevel(n)]));
-    expect(levels).toEqual({
-      'Ground floor': 0, 'rez-de-chaussée': 0, 'First floor': 1, '1st': 1, 'Floor 2': 2, 'second floor': 2,
-      Cellar: -1, 'Cellar 2': -2, basement: -1, '-1': -1, 'Attic 3': 3, attic: 50, Garage: undefined,
-    });
-    expect(floorLevel(undefined)).toBe(0);
-  });
-
-  it('turn a number typed in into a name, and keep other names as they are', () => {
+  it('are kept as written, and the ground floor has none', () => {
     const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
-    setFloor(plan, rooms(plan), '2');
-    expect(plan.points[0].floor).toBe('Second floor');
-    setFloor(plan, rooms(plan), ' Mezzanine ');
-    expect(plan.points[0].floor).toBe('Mezzanine');
+    setFloor(plan, rooms(plan), ' Upper floor - living area ');
+    expect(plan.points[0].floor).toBe('Upper floor - living area');
+    setFloor(plan, rooms(plan), 'Ground floor');
+    expect(plan.points[0].floor).toBeUndefined();
   });
 });
 
@@ -328,6 +304,43 @@ describe('deleting a wall', () => {
     removeWall(plan, p2.id, p3.id);
     removeWall(plan, p3.id, p0.id);
     expect(plan.points.map((p) => p.id)).toEqual([p1.id, p2.id]); // p0 and p3 have no wall left
+  });
+});
+
+describe('copy and paste', () => {
+  it('puts a room back anywhere, with its furniture, doors and name, after the original is gone', () => {
+    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
+    const ids = square(plan, 0, 0, 4, 3);
+    door(plan, ids, 0, 1);
+    setRoomName(plan, rooms(plan)[0], 'Kitchen');
+    plan.furniture.push({ id: 'f1', kind: 'table4', x: 2, y: 1.5, w: 1.2, d: 0.8, h: 0.75, angle: 0 });
+    plan.furniture.push({ id: 'f2', kind: 'table4', x: 9, y: 9, w: 1.2, d: 0.8, h: 0.75, angle: 0 }); // not in the room
+    const clip = JSON.parse(JSON.stringify(copyRooms(plan, rooms(plan))));
+    expect(clip.furniture.map((f: { id: string }) => f.id)).toEqual(['f1']);
+    deleteRoom(plan, rooms(plan)[0]);
+    plan.furniture = [];
+    expect(plan.walls).toHaveLength(0);
+    const c = clipCentre(clip);
+    expect(c).toEqual({ x: 2, y: 1.5 });
+    const made = pasteClip(plan, clip, { x: 10, y: 20 });
+    expect(rooms(plan)).toHaveLength(1);
+    expect(plan.walls).toHaveLength(4);
+    expect(plan.openings).toHaveLength(1);
+    expect(plan.names[0]).toMatchObject({ name: 'Kitchen', x: 12, y: 21.5 });
+    expect(made.furniture[0]).toMatchObject({ x: 12, y: 21.5 });
+    expect(made.furniture[0].id).not.toBe('f1');
+    expect(Math.min(...plan.points.map((p) => p.x))).toBeCloseTo(10);
+    expect(roomName(plan, rooms(plan)[0])).toBe('Kitchen');
+  });
+
+  it('takes a piece of furniture alone', () => {
+    const plan: Plan = { points: [], walls: [], constraints: [], furniture: [], openings: [], joins: [], stairs: [], names: [] };
+    plan.stairs.push({ id: 's', x: 1, y: 1, width: 1, length: 3, angle: 0, steps: 12 });
+    const clip = copyRooms(plan, [], false, { stairs: ['s'] });
+    expect(clip.stairs).toHaveLength(1);
+    expect(clip.points).toHaveLength(0);
+    pasteClip(plan, clip, { x: 5, y: 0 });
+    expect(plan.stairs.map((s) => s.x)).toEqual([1, 6]);
   });
 });
 

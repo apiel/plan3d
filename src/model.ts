@@ -26,6 +26,8 @@ export interface Wall {
   color?: string;
   /** Metres, growing outwards from the line (the line is the face inside the room). */
   thickness?: number;
+  /** Metres from the floor to the top of this wall in the 3D view, when it is not as high as the rest (a low wall under a platform). */
+  height?: number;
 }
 
 export const DEFAULT_THICKNESS = 0.1;

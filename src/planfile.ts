@@ -30,13 +30,13 @@ The JSON:
   * points: corners {id, x, y, sensor: {x, y}, floor?}. sensor is where the camera
     put the corner; for a new corner, make sensor the same as x, y. floor: the
     floor's name as the user wrote it, missing for the ground floor, for example
-    "Cellar", "First floor", "Attic 3"; a number in the name or a word like cellar,
-    first, upper, attic says how high it is. Corners joined by walls, and rooms
-    joined through a door, are on one floor. The floors are drawn side by side on the plan; the 3D
-    view stacks them.
-  * walls: {a, b, thickness?, color?}: a straight wall between corners a and b. The
+    "Cellar" or "Upper floor". It only names the floor: all floors are drawn side by
+    side, on the plan and in the 3D view. Corners joined by walls, and rooms joined
+    through a door, are on one floor.
+  * walls: {a, b, thickness?, color?, height?}: a straight wall between corners a and b. The
     line a-b is the face of the wall inside the room; thickness (default 0.1) grows
-    outwards, away from the room.
+    outwards, away from the room. height: metres, for a wall lower than the
+    rest (default: the plan's height).
   * Rooms are not stored: a room is any area closed in by walls. A wall that ends
     on another wall must end on a corner of it: split that wall (replace a-b by a-p
     and p-b, same thickness and color) and add
@@ -276,6 +276,7 @@ export function planProblems(plan: Plan): string[] {
   for (const w of plan.walls) {
     if (!has(w.a) || !has(w.b)) out.push(`wall ${w.a}-${w.b} goes to a corner that does not exist`);
     if (w.thickness !== undefined && !(num(w.thickness) && w.thickness > 0)) out.push(`wall ${w.a}-${w.b} has a bad thickness`);
+    if (w.height !== undefined && !(num(w.height) && w.height > 0)) out.push(`wall ${w.a}-${w.b} has a bad height`);
   }
   for (const c of plan.constraints) {
     if (!['distance', 'rightAngle', 'angle', 'parallel', 'equal'].includes(c.type)) out.push(`unknown constraint type "${c.type}"`);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Plan, newId, roomFromCorners } from '../model';
+import { newFurniture } from '../furniture';
 import { DEFAULT_HEIGHT, Solid, buildSolids } from './build';
 
 const room = (): Plan => roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
@@ -90,31 +91,25 @@ describe('3D solids', () => {
     expect(buildSolids(plan).find((s) => s.kind === 'floor')!.holes).toBeUndefined();
   });
 
-  it('stacks the floors, the upper one over the lower by their stairs', () => {
+  it('builds all floors at the same level, side by side', () => {
     const plan = room();
     const upper = roomFromCorners([{ x: 10, y: 5 }, { x: 14, y: 5 }, { x: 14, y: 8 }, { x: 10, y: 8 }]);
-    for (const p of upper.points) p.floor = 1;
+    for (const p of upper.points) p.floor = 'First floor';
     plan.points.push(...upper.points);
     plan.walls.push(...upper.walls);
-    // the same stairs on both floors: up from the ground floor, down from the upper one
-    plan.stairs.push({ id: 'a', x: 2, y: 1.5, width: 0.9, length: 2.6, angle: 0, steps: 13 });
-    plan.stairs.push({ id: 'b', x: 12, y: 6.5, width: 0.9, length: 2.6, angle: 0, steps: 13, down: true });
-    const solids = buildSolids(plan);
-    const floors = solids.filter((s) => s.kind === 'floor');
+    const floors = buildSolids(plan).filter((s) => s.kind === 'floor');
     expect(floors).toHaveLength(2);
-    const [ground, top] = floors;
-    expect(ground.z1).toBe(0);
-    expect(top.z1).toBeCloseTo(2.7); // wall height 2.5 and a 20 cm slab
-    // x 10..14, y 5..8 moved onto 0..4, 0..3: the stairs are over each other
-    expect(Math.min(...top.pts.map((p) => p.x))).toBeCloseTo(0);
-    expect(Math.min(...top.pts.map((p) => p.y))).toBeCloseTo(0);
-    expect(top.holes).toHaveLength(1);
-    // the flight from the ground floor arrives where the flight down from the upper one starts
-    const flights = solids.filter((s) => s.kind === 'stair');
-    expect(flights).toHaveLength(26);
-    expect(Math.max(...flights.slice(0, 13).map((s) => s.z1))).toBeCloseTo(2.7);
-    expect(Math.max(...flights.slice(13).map((s) => s.z1))).toBeCloseTo(2.7);
-    expect(Math.min(...flights.slice(13).map((s) => s.z0))).toBeCloseTo(0);
+    expect(floors.every((s) => s.z0 === -0.02 && s.z1 === 0)).toBe(true);
+    expect(Math.min(...floors[1].pts.map((p) => p.x))).toBeCloseTo(10);
+  });
+
+  it('raises a platform to its height', () => {
+    const plan = room();
+    plan.furniture.push({ ...newFurniture('platform', { x: 2, y: 1.5 }) });
+    const piece = buildSolids(plan).find((s) => s.kind === 'furniture')!;
+    expect(piece.z0).toBe(0);
+    expect(piece.z1).toBeCloseTo(0.6);
+    expect(area(piece)).toBeCloseTo(1);
   });
 
   it('climbs the winders of a turn last', () => {
@@ -124,5 +119,19 @@ describe('3D solids', () => {
     expect(steps).toHaveLength(13);
     expect(steps[12].pts).toHaveLength(3); // a winder: a triangle at the inner corner
     expect(Math.max(...steps[12].pts.map((p) => p.x))).toBeGreaterThan(2 + 1.3);
+  });
+});
+
+describe('wall height', () => {
+  it('builds a wall as high as it says, the others as high as the plan', () => {
+    const plan = roomFromCorners([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 3 }, { x: 0, y: 3 }]);
+    plan.walls[0].height = 0.6;
+    const tops = plan.walls.map((w) => {
+      const a = plan.points.find((p) => p.id === w.a)!;
+      const pieces = buildSolids(plan).filter((s) => s.kind === 'wall' && s.pts.every((p) => Math.abs(p.y - a.y) < 0.5 && Math.abs(p.x - a.x) < 5));
+      return pieces.length ? Math.max(...pieces.map((s) => s.z1)) : 0;
+    });
+    expect(Math.min(...tops.filter(Boolean))).toBeCloseTo(0.6);
+    expect(Math.max(...tops)).toBeCloseTo(DEFAULT_HEIGHT);
   });
 });
