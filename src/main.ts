@@ -41,7 +41,7 @@ import { applyJoins, deleteRoom, duplicateRooms, groupLoop, joinDoors, joinOf, j
 import { SolveResult, apply, solve, wallKey } from './solver';
 import { StairHandle, flipStair, insideStair, newStair, resizeStair, stairCorners, stairHandles, stairPoint, stairTreads, stairWalk, straightSteps } from './stairs';
 import { DEFAULT_HEIGHT } from './view3d/build';
-import { LIBRARY, furnitureIcon, furnitureItem, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
+import { LIBRARY, furnitureIcon, furnitureItem, furnitureAxes, furniturePoint, insideFurniture, newFurniture, snapToWalls } from './furniture';
 import { load, loadDriveFile, save, saveDriveFile } from './storage';
 
 const POINT_HIT = 12; // px, with a mouse
@@ -66,6 +66,10 @@ type Drag =
   | { kind: 'point'; id: string; moved: boolean }
   | { kind: 'stair'; id: string; from: Vec; start: Vec; moved: boolean }
   /** A handle of the selected stairs: `start` is how they were when it was picked up. */
+  /** The turn handle of the selected piece or stairs: `a0`: the angle of the cursor round the centre when picked up, `start`: the piece's angle then. */
+  | { kind: 'rotate'; what: 'furniture' | 'stair'; id: string; a0: number; start: number; moved: boolean }
+  /** A handle of the selected piece, at (`fx`, `fy`) in its frame (-0.5, 0 or 0.5): `p0` is the opposite side or corner, which stays where it is. */
+  | { kind: 'furnitureSize'; id: string; fx: number; fy: number; p0: Vec; moved: boolean }
   | { kind: 'stairSize'; id: string; handle: StairHandle; from: Vec; start: Stair; moved: boolean }
   /** `start`: where it stood (centre and angle), so snapping to walls does not build up while dragging. */
   | { kind: 'furniture'; id: string; from: Vec; start: { x: number; y: number; angle: number }; down: Vec; moved: boolean }
@@ -199,6 +203,87 @@ function resolve(): void {
 // ---------- hit testing ----------
 
 /** A handle of the selected stairs under the pointer. */
+/** The turn handle of the selected piece of furniture or stairs: its centre and the handle, on screen, just outside the side that is `angle` 0 up. */
+function rotateHandle(): { what: 'furniture' | 'stair'; id: string; obj: { angle: number }; centre: Vec; at: Vec; edge: Vec } | undefined {
+  const sel = selection;
+  let found: { what: 'furniture' | 'stair'; id: string; obj: { angle: number }; centre: Vec; edge: Vec } | undefined;
+  if (sel?.kind === 'furniture') {
+    const f = plan.furniture.find((x) => x.id === sel.id);
+    if (f) found = { what: 'furniture', id: f.id, obj: f, centre: toScreen(f), edge: toScreen(furniturePoint(f, 0, -0.5)) };
+  } else if (sel?.kind === 'stair') {
+    const st = plan.stairs.find((x) => x.id === sel.id);
+    if (st) found = { what: 'stair', id: st.id, obj: st, centre: toScreen(st), edge: toScreen(stairPoint(st, 0, -st.width / 2)) };
+  }
+  if (!found) return undefined;
+  const len = Math.hypot(found.edge.x - found.centre.x, found.edge.y - found.centre.y) || 1;
+  const at = { x: found.edge.x + ((found.edge.x - found.centre.x) / len) * 28, y: found.edge.y + ((found.edge.y - found.centre.y) / len) * 28 };
+  return { ...found, at };
+}
+
+/** The turn handle: a round knob on a stalk beside the selected piece, with the angle while it is turned. */
+function drawRotateHandle(): void {
+  const h = rotateHandle();
+  if (!h) return;
+  ctx.strokeStyle = '#60a5fa';
+  ctx.fillStyle = '#1d2129';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(h.edge.x, h.edge.y);
+  ctx.lineTo(h.at.x, h.at.y);
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(h.at.x, h.at.y, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(h.at.x, h.at.y, 4, -Math.PI * 0.8, Math.PI * 0.6);
+  ctx.stroke();
+  if (drag?.kind === 'rotate') label(`${Math.round(h.obj.angle)}°`, { x: h.at.x, y: h.at.y - 20 }, '#60a5fa', false);
+}
+
+/** Two handles: the right side stretches the width, the front side the depth. */
+const FURNITURE_HANDLES: [number, number][] = [[0.5, 0], [0, 0.5]];
+
+/** The selected piece of furniture, when it is the only thing selected. */
+function selectedFurniture(): Furniture | undefined {
+  const sel = selection;
+  return sel?.kind === 'furniture' ? plan.furniture.find((x) => x.id === sel.id) : undefined;
+}
+
+/** The handle of the selected piece under `pos`: the sides and corners, to stretch it. */
+function hitFurnitureHandle(pos: Vec, tol: number): { f: Furniture; fx: number; fy: number } | undefined {
+  const f = selectedFurniture();
+  if (!f) return undefined;
+  let best: { f: Furniture; fx: number; fy: number } | undefined;
+  let bestD = POINT_HIT * tol;
+  for (const [fx, fy] of FURNITURE_HANDLES) {
+    const h = toScreen(furniturePoint(f, fx, fy));
+    const d = Math.hypot(h.x - pos.x, h.y - pos.y);
+    if (d <= bestD) {
+      best = { f, fx, fy };
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+function drawFurnitureHandles(): void {
+  const f = selectedFurniture();
+  if (!f) return;
+  ctx.fillStyle = '#1d2129';
+  ctx.strokeStyle = '#60a5fa';
+  ctx.lineWidth = 2;
+  for (const [fx, fy] of FURNITURE_HANDLES) {
+    const h = toScreen(furniturePoint(f, fx, fy));
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
 function hitStairHandle(pos: Vec, tol: number): { st: Stair; handle: StairHandle } | undefined {
   const sel = selection;
   const st = sel?.kind === 'stair' ? plan.stairs.find((x) => x.id === sel.id) : undefined;
@@ -765,6 +850,8 @@ function render(): void {
     ctx.restore();
   }
   for (const o of plan.openings) drawOpeningLabel(o);
+  drawFurnitureHandles();
+  drawRotateHandle();
 
   // wall lengths, over the openings, and remembered for tapping
   labelBoxes = [];
@@ -795,6 +882,7 @@ function render(): void {
   }
 
   // when floors are set, each one is named above its rooms
+  floorTags = [];
   if (plan.points.some((p) => p.floor !== undefined)) {
     const byFloor = new Map<string, PlanPoint[]>();
     for (const p of plan.points) byFloor.set(floorLabel(p.floor), [...(byFloor.get(floorLabel(p.floor)) ?? []), p]);
@@ -804,7 +892,14 @@ function render(): void {
     ctx.textBaseline = 'alphabetic';
     for (const [name, pts] of byFloor) {
       const at = toScreen({ x: Math.min(...pts.map((p) => p.x)), y: Math.min(...pts.map((p) => p.y)) });
-      ctx.fillText(name.toUpperCase(), at.x, at.y - 56);
+      const text = name.toUpperCase();
+      const w = ctx.measureText(text).width;
+      // above the walls and their lengths: up from the corner until nothing is in the way
+      let up = 40;
+      while (up < 200 && crowded({ x: at.x + w / 2, y: at.y - up - 6 }, w, 14)) up += 8;
+      ctx.fillText(text, at.x, at.y - up);
+      dimBoxes.push({ x: at.x + w / 2, y: at.y - up - 6, w, h: 14 });
+      floorTags.push({ name, x: at.x + w / 2, y: at.y - up - 6, w, h: 14 });
     }
   }
 
@@ -927,6 +1022,20 @@ function drawAlongWall(p: Vec, skip?: string, towards?: Vec): void {
     const se = toScreen(end);
     dimension({ x: se.x + n.x, y: se.y + n.y }, { x: sp.x + n.x, y: sp.y + n.y }, dist(end, host.at));
   }
+}
+
+/** The floor names drawn on the plan this frame, to tap. */
+let floorTags: { name: string; x: number; y: number; w: number; h: number }[] = [];
+
+/** Selects every room on a floor, with the stairs in them; what stands in the rooms goes with them. */
+function selectFloor(name: string): boolean {
+  const loops = rooms(plan).filter((loop) => floorLabel(pointById(plan, loop[0])?.floor) === name);
+  if (!loops.length) return false;
+  const stairs = plan.stairs.filter((s) => loops.some((loop) => insideLoop(plan, loop, s)));
+  selection = stairs.length
+    ? { kind: 'group', rooms: loops, furniture: [], stairs: stairs.map((s) => s.id) }
+    : { kind: 'room', loop: loops[0], ...(loops.length > 1 ? { also: loops.slice(1) } : {}) };
+  return true;
 }
 
 /** Dimension labels drawn so far in this frame, so the next ones keep clear of them. */
@@ -1485,9 +1594,9 @@ function renderSheet(): void {
   } else if (sel?.kind === 'furniture') {
     const f = plan.furniture.find((x) => x.id === sel.id);
     if (!f) return closeSheet();
-    const update = (change: () => void) => {
+    const update = (change: () => void, snap = true) => {
       change();
-      snapToWalls(plan, f, false);
+      if (snap) snapToWalls(plan, f, false);
       commit();
       sheet.dataset.key = '';
       render();
@@ -1498,7 +1607,7 @@ function renderSheet(): void {
       numberRow(f.w, f.w * 100, (m) => update(() => (f.w = m)), { id: 'fuW', label: 'Width', focus: false }) +
       numberRow(f.d, f.d * 100, (m) => update(() => (f.d = m)), { id: 'fuD', label: 'Depth', focus: false }) +
       numberRow(f.h, f.h * 100, (m) => update(() => (f.h = m)), { id: 'fuH', label: 'Height', focus: false }) +
-      `<div class="row">` +
+            `<div class="row">` +
       `<button id="fuRot" class="icon" title="Turn a quarter turn"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/></svg>Turn 90°</button>` +
       `<button id="fuDup" class="icon" title="Put a copy beside it"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="1"/><path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/></svg>Copy</button>` +
       `<button id="fuDel" class="icon danger" title="Delete this piece"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>` +
@@ -1807,6 +1916,16 @@ canvas.addEventListener('pointerdown', (e) => {
   if (tool === 'furniture') return furnitureTap(pos);
   if (tool) return openingTap(pos, tol);
 
+  // the name of a floor: all of it
+  const tag = floorTags.find((t) => Math.abs(pos.x - t.x) <= t.w / 2 + 4 && Math.abs(pos.y - t.y) <= t.h / 2 + 4);
+  if (tag && selectFloor(tag.name)) {
+    drag = selection?.kind === 'group' ? { kind: 'group', from: cursor, down: pos, moved: false } : selection?.kind === 'room' ? { kind: 'room', id: selection.loop[0], from: cursor, down: pos, moved: false } : null;
+    sheet.dataset.key = '';
+    render();
+    renderUi();
+    return;
+  }
+
   // shift: a rectangle to pick rooms and things with (a tap with shift adds or removes a room)
   if (e.shiftKey) {
     drag = { kind: 'marquee', from: pos, to: pos, moved: false };
@@ -1814,6 +1933,18 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   if (selection?.kind === 'group' && inGroup(cursor)) {
     drag = { kind: 'group', from: cursor, down: pos, moved: false };
+    return;
+  }
+
+  const grown = hitFurnitureHandle(pos, tol);
+  if (grown && !(rotateHandle() && Math.hypot(rotateHandle()!.at.x - pos.x, rotateHandle()!.at.y - pos.y) < 10)) {
+    drag = { kind: 'furnitureSize', id: grown.f.id, fx: grown.fx, fy: grown.fy, p0: furniturePoint(grown.f, -grown.fx, -grown.fy), moved: false };
+    return;
+  }
+
+  const turn = rotateHandle();
+  if (turn && Math.hypot(turn.at.x - pos.x, turn.at.y - pos.y) <= POINT_HIT * tol) {
+    drag = { kind: 'rotate', what: turn.what, id: turn.id, a0: Math.atan2(pos.y - turn.centre.y, pos.x - turn.centre.x), start: turn.obj.angle, moved: false };
     return;
   }
 
@@ -1889,6 +2020,36 @@ canvas.addEventListener('pointermove', (e) => {
       drag.moved = true;
       render();
     }
+  } else if (drag?.kind === 'furnitureSize') {
+    const d = drag;
+    const f = plan.furniture.find((x) => x.id === d.id);
+    if (f) {
+      const { u, v } = furnitureAxes(f);
+      const rel = { x: cursor.x - d.p0.x, y: cursor.y - d.p0.y };
+      const MIN = 0.05;
+      const sx = Math.sign(d.fx);
+      const sy = Math.sign(d.fy);
+      if (sx) f.w = Math.max(MIN, sx * (rel.x * u.x + rel.y * u.y));
+      if (sy) f.d = Math.max(MIN, sy * (rel.x * v.x + rel.y * v.y));
+      // the fixed side stays: the centre is half the new size from it
+      f.x = d.p0.x + u.x * sx * (f.w / 2) + v.x * sy * (f.d / 2);
+      f.y = d.p0.y + u.y * sx * (f.w / 2) + v.y * sy * (f.d / 2);
+      d.moved = true;
+    }
+    render();
+  } else if (drag?.kind === 'rotate') {
+    const d = drag;
+    const h = rotateHandle();
+    if (h) {
+      let deg = d.start + ((Math.atan2(pos.y - h.centre.y, pos.x - h.centre.x) - d.a0) * 180) / Math.PI;
+      deg = ((deg % 360) + 360) % 360;
+      // square turns hold a little: easy to get back to straight
+      const quarter = Math.round(deg / 90) * 90;
+      if (Math.abs(deg - quarter) < 4) deg = quarter % 360;
+      h.obj.angle = deg;
+      d.moved = true;
+    }
+    render();
   } else if (drag?.kind === 'stairSize') {
     const d = drag;
     const st = plan.stairs.find((x) => x.id === d.id);
@@ -1989,8 +2150,8 @@ const pointerEnd = (e: PointerEvent) => {
     return;
   }
   const moved = drag?.kind === 'point' && drag.moved;
-  if ((drag?.kind === 'stair' || drag?.kind === 'stairSize' || drag?.kind === 'furniture') && drag.moved) commit();
-  if (drag?.kind === 'stairSize' && drag.moved) {
+  if ((drag?.kind === 'stair' || drag?.kind === 'stairSize' || drag?.kind === 'furniture' || drag?.kind === 'rotate' || drag?.kind === 'furnitureSize') && drag.moved) commit();
+  if ((drag?.kind === 'stairSize' || drag?.kind === 'rotate' || drag?.kind === 'furnitureSize') && drag.moved) {
     // the panel shows the new size
     sheet.dataset.key = '';
     renderUi();
